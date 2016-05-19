@@ -1379,4 +1379,3 @@
    */
   fabric.Element = fabric.Canvas;
 })();
-s

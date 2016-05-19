@@ -327,6 +327,7 @@
 
       while (group) {
         group.addWithUpdate();
+        group.setCoords();
         this.fire('object:modified', { target: group });
         group.fire('modified');
         group = group.group;

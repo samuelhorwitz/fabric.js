@@ -284,10 +284,8 @@
       if (target) {
         target.isMoving = false;
       }
-
-      shouldRender && this.renderAll();
-
       this._handleCursorAndEvent(e, target);
+      shouldRender && this.renderAll();
     },
 
     _handleCursorAndEvent: function(e, target) {
@@ -301,7 +299,9 @@
       }, 50); */
 
       this.fire('mouse:up', { target: target, e: e });
-      target && target.fire('mouseup', { e: e });
+      for (var i = 0; i < this.targets.length; i++) {
+        this.targets[i].fire('mouseup', { e: e })
+      }
     },
 
     /**
@@ -310,7 +310,8 @@
     _finalizeCurrentTransform: function() {
 
       var transform = this._currentTransform,
-          target = transform.target;
+          target = transform.target,
+          group = target.group;
 
       if (target._scaling) {
         target._scaling = false;
@@ -322,6 +323,14 @@
       if (transform.actionPerformed || (this.stateful && target.hasStateChanged())) {
         this.fire('object:modified', { target: target });
         target.fire('modified');
+      }
+
+      while (group) {
+        group.update();
+        group.setCoords();
+        this.fire('object:modified', { target: group });
+        group.fire('modified');
+        group = group.group;
       }
     },
 
@@ -364,8 +373,8 @@
       this.fire('mouse:down', { e: e });
 
       var target = this.findTarget(e);
-      if (typeof target !== 'undefined') {
-        target.fire('mousedown', { e: e, target: target });
+      for (var i = 0; i < this.targets.length; i++) {
+        this.targets[i].fire('mousedown', { e: e })
       }
     },
 
@@ -383,8 +392,8 @@
       this.fire('mouse:move', { e: e });
 
       var target = this.findTarget(e);
-      if (typeof target !== 'undefined') {
-        target.fire('mousemove', { e: e, target: target });
+      for (var i = 0; i < this.targets.length; i++) {
+        this.targets[i].fire('mousemove', { e: e })
       }
     },
 
@@ -401,8 +410,8 @@
       this.fire('mouse:up', { e: e });
 
       var target = this.findTarget(e);
-      if (typeof target !== 'undefined') {
-        target.fire('mouseup', { e: e, target: target });
+      for (var i = 0; i < this.targets.length; i++) {
+        this.targets[i].fire('mouseup', { e: e })
       }
     },
 
@@ -433,8 +442,8 @@
       }
 
       var target = this.findTarget(e),
-          pointer = this.getPointer(e, true);
-
+          pointer = this.getPointer(e, true),
+          deepTarget;
       // save pointer for check in __onMouseUp event
       this._previousPointer = pointer;
 
@@ -449,22 +458,31 @@
         target = this.getActiveGroup();
       }
 
-      if (target) {
-        if (target.selectable && (target.__corner || !shouldGroup)) {
-          this._beforeTransform(e, target);
-          this._setupCurrentTransform(e, target);
-        }
+      for (var i = this.targets.length - 1; i >= 0; i--) {
+        deepTarget = this.targets[i];
 
-        if (target !== this.getActiveGroup() && target !== this.getActiveObject()) {
-          this.deactivateAll();
-          target.selectable && this.setActiveObject(target, e);
+        if (deepTarget.selectable && (deepTarget.__corner || !this._shouldGroup(e, deepTarget))) {
+          if (deepTarget !== target) {
+            deepTarget.group.update();
+          }
+          this._beforeTransform(e, deepTarget);
+          this._setupCurrentTransform(e, deepTarget);
+          break;
         }
       }
-      // we must renderAll so that active image is placed on the top canvas
-      shouldRender && this.renderAll();
+
+      if (deepTarget) {
+        if (deepTarget !== this.getActiveGroup() && deepTarget !== this.getActiveObject()) {
+          this.deactivateAll();
+          deepTarget.selectable && this.setActiveObject(deepTarget, e);
+        }
+      }
 
       this.fire('mouse:down', { target: target, e: e });
-      target && target.fire('mousedown', { e: e });
+      for (var i = 0; i < this.targets.length; i++) {
+        this.targets[i].fire('mousedown', { e: e })
+      }
+      shouldRender && this.renderAll();
     },
 
     /**
@@ -572,15 +590,25 @@
         this.renderTop();
       }
       else if (!this._currentTransform) {
-        target = this.findTarget(e);
-        this._setCursorFromEvent(e, target);
+        this.findTarget(e);
+
+        if (this.targets.length) {
+          for (var i = 0; i < this.targets.length; i++) {
+            this._setCursorFromEvent(e, this.targets[i]);
+          }
+        }
+        else {
+          this._setCursorFromEvent(e, null);
+        }
       }
       else {
         this._transformObject(e);
       }
 
       this.fire('mouse:move', { target: target, e: e });
-      target && target.fire('mousemove', { e: e });
+      for (var i = 0; i < this.targets.length; i++) {
+        this.targets[i].fire('mousemove', { e: e })
+      }
     },
 
     /**
@@ -589,10 +617,15 @@
      */
     _transformObject: function(e) {
       var pointer = this.getPointer(e),
-          transform = this._currentTransform;
+          transform = this._currentTransform,
+          target = transform.target;
+
+      if (target.group) {
+        pointer = this._normalizePointer(target.group, pointer);
+      }
 
       transform.reset = false,
-      transform.target.isMoving = true;
+      target.isMoving = true;
 
       this._beforeScaleTransform(e, transform);
       this._performTransformAction(e, transform, pointer);
@@ -705,10 +738,17 @@
       }
       else {
         var activeGroup = this.getActiveGroup(),
-            // only show proper corner when group selection is not active
-            corner = target._findTargetCorner
-                      && (!activeGroup || !activeGroup.contains(target))
-                      && target._findTargetCorner(this.getPointer(e, true));
+            pointer = this.getPointer(e, true),
+            corner;
+
+        if (target.group) {
+          pointer = this._normalizePointer(target.group, pointer);
+        }
+
+        // only show proper corner when group selection is not active
+        corner = target._findTargetCorner
+                  && (!activeGroup || !activeGroup.contains(target))
+                  && target._findTargetCorner(pointer);
 
         if (!corner) {
           this.setCursor(hoverCursor);

@@ -935,6 +935,16 @@
       return object;
     },
 
+    isDescendantOfGroup: function(ancestor) {
+        var isDescendant = false;
+        this.bubbleThroughGroups(function(g) {
+            if (g === ancestor) {
+                isDescendant = true;
+            }
+        });
+        return isDescendant;
+    },
+
     /**
      * Executes given function for each parent group all the way up
      * @param {Function} callback

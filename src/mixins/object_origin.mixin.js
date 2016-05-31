@@ -106,7 +106,7 @@
     getCenterPoint: function(ignoreGroup) {
       var leftTop;
 
-      if (ignoreGroup) {
+      if (ignoreGroup && this.originalLeft && this.originalTop) {
         leftTop = new fabric.Point(this.originalLeft, this.originalTop);
       }
       else {

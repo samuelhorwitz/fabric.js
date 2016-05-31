@@ -375,8 +375,7 @@
     containsPoint: function (e, target, point, onlyCorners) {
       var ignoreZoom = true,
           pointer = point || this.getPointer(e, ignoreZoom),
-          xy = this._normalizePointer(target, pointer),
-          containsCorners;
+          xy, containsCorners;
 
       if (target.group && target.group === this.getActiveGroup()) {
         xy = this._normalizePointer(target.group, pointer);

@@ -1136,11 +1136,14 @@
         return;
       }
 
-      var shouldTransformByGroup = !this.__group && this.group !== this.canvas.getActiveGroup();
+      var activeGroup = this.canvas.getActiveGroup(),
+          shouldTransformByGroup = !this.__group;
 
       if (shouldTransformByGroup) {
         this.trickleThroughGroups(function(g) {
-          g._transformCtx(ctx);
+          if (g !== activeGroup) {
+            g._transformCtx(ctx);
+          }
         });
       }
 
@@ -1167,7 +1170,9 @@
 
       if (shouldTransformByGroup) {
         this.trickleThroughGroups(function(g) {
-          g._untransformCtx(ctx);
+          if (g !== activeGroup) {
+            g._untransformCtx(ctx);
+          }
         });
       }
     },

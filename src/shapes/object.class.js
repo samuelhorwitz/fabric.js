@@ -1141,10 +1141,10 @@
 
       if (shouldTransformByGroup) {
         this.trickleThroughGroups(function(g) {
-          if (g !== activeGroup) {
+          if (this._shouldTransformByGroup(g)) {
             g._transformCtx(ctx);
           }
-        });
+        }, this);
       }
 
       ctx.save();
@@ -1170,11 +1170,20 @@
 
       if (shouldTransformByGroup) {
         this.trickleThroughGroups(function(g) {
-          if (g !== activeGroup) {
+          if (this._shouldTransformByGroup(g)) {
             g._untransformCtx(ctx);
           }
-        });
+        }, this);
       }
+    },
+
+    /**
+     * @private
+     * @param {fabric.Group} group Group to check
+     * @return {Boolean} should transform by group
+     */
+    _shouldTransformByGroup: function(group) {
+      return group !== this.canvas.getActiveGroup();
     },
 
     /**

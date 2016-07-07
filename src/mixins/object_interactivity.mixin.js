@@ -17,19 +17,47 @@
      * Determines which corner has been clicked
      * @private
      * @param {Object} pointer The pointer indicating the mouse position
+     * @param {Boolean} normalCoords Only find target corner using normal coordinates
      * @return {String|Boolean} corner code (tl, tr, bl, br, etc.), or false if nothing is found
      */
-    _findTargetCorner: function(pointer) {
+    _findTargetCorner: function(pointer, normalCoords) {
       if (!this.hasControls || !this.active) {
         return false;
       }
 
+      var result;
+      this.__corner = 0;
+
+      if (this.group) {
+        this.group.update();
+      }
+
+      if (this.oCoordsNormal) {
+        result = this._findTargetCornerByCoords(pointer, this.oCoordsNormal);
+
+        if (normalCoords) {
+          return result;
+        }
+      }
+
+      if (!result) {
+        return this._findTargetCornerByCoords(pointer, this.oCoords);
+      }
+      else {
+        return result;
+      }
+    },
+
+    /**
+     * @private
+     */
+    _findTargetCornerByCoords: function(pointer, coords) {
       var ex = pointer.x,
           ey = pointer.y,
           xPoints,
           lines;
-      this.__corner = 0;
-      for (var i in this.oCoords) {
+
+      for (var i in coords) {
 
         if (!this.isControlVisible(i)) {
           continue;
@@ -44,7 +72,7 @@
           continue;
         }
 
-        lines = this._getImageLines(this.oCoords[i].corner);
+        lines = this._getImageLines(coords[i].corner);
 
         // debugging
 
@@ -66,6 +94,7 @@
           return i;
         }
       }
+
       return false;
     },
 
@@ -74,15 +103,21 @@
      * the image used to scale/rotate it.
      * @private
      */
-    _setCornerCoords: function() {
-      var coords = this.oCoords,
-          newTheta = degreesToRadians(45 - this.angle),
+    _setCornerCoords: function(normalized) {
+      var newTheta = degreesToRadians(45 - this.angle),
           /* Math.sqrt(2 * Math.pow(this.cornerSize, 2)) / 2, */
           /* 0.707106 stands for sqrt(2)/2 */
           cornerHypotenuse = this.cornerSize * 0.707106,
           cosHalfOffset = cornerHypotenuse * Math.cos(newTheta),
           sinHalfOffset = cornerHypotenuse * Math.sin(newTheta),
-          x, y;
+          x, y, coords;
+
+      if (normalized) {
+        coords = this.oCoordsNormal;
+      }
+      else {
+        coords = this.oCoords;
+      }
 
       for (var point in coords) {
         x = coords[point].x;

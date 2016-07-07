@@ -935,6 +935,53 @@
     },
 
     /**
+     * Executes given function for each parent group all the way up
+     * @param {Function} callback
+     *                   Callback invoked with current group object as first argument,
+     *                   and previous group as second argument
+     *                   Callback is invoked in a context of Global Object (e.g. `window`)
+     *                   when no `context` argument is given
+     *
+     * @param {Object} context Context (aka thisObject)
+     * @return {Self} thisArg
+     */
+    bubbleThroughGroups: function(callback, context) {
+      var parentGroup = this.group,
+          child = this;
+      while (parentGroup) {
+        callback.call(context, parentGroup, child);
+        child = parentGroup;
+        parentGroup = parentGroup.group;
+      }
+      return this;
+    },
+
+    /**
+     * Executes given function for each parent group starting at the top and running down
+     * @param {Function} callback
+     *                   Callback invoked with current group object as first argument,
+     *                   and previous group as second argument
+     *                   Callback is invoked in a context of Global Object (e.g. `window`)
+     *                   when no `context` argument is given
+     *
+     * @param {Object} context Context (aka thisObject)
+     * @return {Self} thisArg
+     */
+    trickleThroughGroups: function(callback, context) {
+      var memo = [];
+
+      this.bubbleThroughGroups(function() {
+        memo.push(arguments);
+      });
+
+      for (var i = memo.length - 1; i >= 0; i--) {
+        callback.apply(context, memo[i]);
+      }
+
+      return this;
+    },
+
+    /**
      * Returns a string representation of an instance
      * @return {String}
      */
@@ -1074,6 +1121,17 @@
         return;
       }
 
+      var activeGroup = this.canvas.getActiveGroup(),
+          shouldTransformByGroup = !this.__group;
+
+      if (shouldTransformByGroup) {
+        this.trickleThroughGroups(function(g) {
+          if (this._shouldTransformByGroup(g)) {
+            g._transformCtx(ctx);
+          }
+        }, this);
+      }
+
       ctx.save();
 
       //setup fill rule for current object
@@ -1094,6 +1152,23 @@
       this.clipTo && ctx.restore();
 
       ctx.restore();
+
+      if (shouldTransformByGroup) {
+        this.trickleThroughGroups(function(g) {
+          if (this._shouldTransformByGroup(g)) {
+            g._untransformCtx(ctx);
+          }
+        }, this);
+      }
+    },
+
+    /**
+     * @private
+     * @param {fabric.Group} group Group to check
+     * @return {Boolean} should transform by group
+     */
+    _shouldTransformByGroup: function(group) {
+      return group !== this.canvas.getActiveGroup();
     },
 
     /**
@@ -1156,8 +1231,7 @@
      * @param {Boolean} [noTransform] When true, context is not transformed
      */
     _renderControls: function(ctx, noTransform) {
-      if (!this.active || noTransform
-          || (this.group && this.group !== this.canvas.getActiveGroup())) {
+      if (!this.active || noTransform) {
         return;
       }
 
@@ -1172,9 +1246,15 @@
       ctx.lineWidth = 1 / this.borderScaleFactor;
       ctx.globalAlpha = this.isMoving ? this.borderOpacityWhenMoving : 1;
 
-      if (this.group && this.group === this.canvas.getActiveGroup()) {
+      if (this.group) {
         ctx.rotate(degreesToRadians(options.angle));
-        this.drawBordersInGroup(ctx, options);
+
+        if (this.active) {
+          this.drawBorders(ctx, options);
+        }
+        else {
+          this.drawBordersInGroup(ctx, options);
+        }
       }
       else {
         ctx.rotate(degreesToRadians(this.angle));

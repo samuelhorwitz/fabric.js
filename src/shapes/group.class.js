@@ -79,45 +79,35 @@
         this.originY = options.originY;
       }
 
-      if (isAlreadyGrouped) {
-        // do not change coordinate of objects enclosed in a group,
-        // because objects coordinate system have been group coodinate system already.
-        this._updateObjectsCoords(true);
-      }
-      else {
+      if (!isAlreadyGrouped) {
         this._calcBounds();
         this._updateObjectsCoords();
         this.callSuper('initialize', options);
       }
 
+      this.on('added', function() {
+        this._setupStateOnObjects();
+      });
+
+      this._setupStateOnObjects();
       this.setCoords();
       this.saveCoords();
     },
 
     /**
      * @private
-     * @param {Boolean} [skipCoordsChange] if true, coordinates of objects enclosed in a group do not change
      */
-    _updateObjectsCoords: function(skipCoordsChange) {
+    _updateObjectsCoords: function() {
       for (var i = this._objects.length; i--; ){
-        this._updateObjectCoords(this._objects[i], skipCoordsChange);
+        this._updateObjectCoords(this._objects[i]);
       }
     },
 
     /**
      * @private
      * @param {Object} object
-     * @param {Boolean} [skipCoordsChange] if true, coordinates of object dose not change
      */
-    _updateObjectCoords: function(object, skipCoordsChange) {
-      // do not display corners of objects enclosed in a group
-      object.__origHasControls = object.hasControls;
-      object.hasControls = false;
-
-      if (skipCoordsChange) {
-        return;
-      }
-
+    _updateObjectCoords: function(object) {
       var objectLeft = object.getLeft(),
           objectTop = object.getTop(),
           center = this.getCenterPoint();
@@ -146,25 +136,59 @@
      * @chainable
      */
     addWithUpdate: function(object) {
-      this._restoreObjectsState();
-      fabric.util.resetObjectTransform(this);
-      if (object) {
-        this._objects.push(object);
-        object.group = this;
-        object._set('canvas', this.canvas);
-      }
-      // since _restoreObjectsState set objects inactive
-      this.forEachObject(this._setObjectActive, this);
-      this._calcBounds();
-      this._updateObjectsCoords();
+      return this.insertWithUpdate(object);
+    },
+
+    /**
+     * Inserts an object into collection at specified index; Then recalculates group's dimension, position.
+     * @param {Object} object Object to insert
+     * @param {Number} index Index to insert object at
+     * @param {Boolean} nonSplicing When `true`, no splicing (shifting) of objects occurs
+     * @return {fabric.Group} thisArg
+     * @chainable
+     */
+    insertWithUpdate: function(object, index, nonSplicing) {
+      this._nestWrapper(function() {
+        this._restoreObjectsState();
+        fabric.util.resetObjectTransform(this);
+        if (object) {
+          if (typeof index == 'undefined') {
+            this._objects.push(object);
+          }
+          else {
+            if (nonSplicing) {
+              this._objects[index] = object;
+            }
+            else {
+              this._objects.splice(index, 0, object);
+            }
+          }
+          object.group = this;
+          object._set('canvas', this.canvas);
+        }
+        // since _restoreObjectsState obliterates group
+        this.forEachObject(this._setObjectGroup, this);
+        this._calcBounds();
+        this._updateObjectsCoords();
+      }, this);
+
+      return this;
+    },
+
+    /**
+     * Recalculates group's dimension, position.
+     * @return {fabric.Group} thisArg
+     * @chainable
+     */
+    update: function() {
+      this.addWithUpdate();
       return this;
     },
 
     /**
      * @private
      */
-    _setObjectActive: function(object) {
-      object.set('active', true);
+    _setObjectGroup: function(object) {
       object.group = this;
     },
 
@@ -175,16 +199,56 @@
      * @chainable
      */
     removeWithUpdate: function(object) {
-      this._restoreObjectsState();
-      fabric.util.resetObjectTransform(this);
-      // since _restoreObjectsState set objects inactive
-      this.forEachObject(this._setObjectActive, this);
+      this._nestWrapper(function() {
+        this._restoreObjectsState();
+        fabric.util.resetObjectTransform(this);
+        // since _restoreObjectsState obliterates group
+        this.forEachObject(this._setObjectGroup, this);
 
-      this.remove(object);
-      this._calcBounds();
-      this._updateObjectsCoords();
+        this.remove(object);
+        this._calcBounds();
+        this._updateObjectsCoords();
+      }, this);
 
       return this;
+    },
+
+    /**
+     * Plucks an object from a group for temporary use as an independent object
+     * @param {Object} object
+     * @return {fabric.Group} thisArg
+     * @chainable
+     */
+    pluckWithUpdate: function(object) {
+      this._nestWrapper(function() {
+        object.__group = this;
+        this._restoreObjectState(object);
+      }, this);
+
+      return this;
+    },
+
+    /**
+     * @private
+     */
+    _nestWrapper: function(callback, context) {
+      var parentGroups = [];
+
+      context.trickleThroughGroups(function(g, child) {
+        parentGroups.push({
+          group: g,
+          child: child,
+          index: g._objects.indexOf(child)
+        });
+        g.removeWithUpdate(child);
+      }, context);
+
+      callback.call(context);
+
+      for (var i = 0, parentGroup; i < parentGroups.length; i++) {
+        parentGroup = parentGroups[i];
+        parentGroup.group.insertWithUpdate(parentGroup.child, parentGroup.index);
+      }
     },
 
     /**
@@ -193,6 +257,26 @@
     _onObjectAdded: function(object) {
       object.group = this;
       object._set('canvas', this.canvas);
+      this._setupStateOnObject(object);
+    },
+
+    /**
+     * @private
+     */
+    _setupStateOnObjects: function() {
+      for (var i = 0; i < this._objects.length; i++) {
+        this._setupStateOnObject(this._objects[i]);
+      }
+    },
+
+    /**
+     * @private
+     */
+    _setupStateOnObject: function(object) {
+      this.canvas && this.canvas.stateful && object.setupState();
+      if (object instanceof fabric.Group) {
+        object._setupStateOnObjects();
+      }
     },
 
     /**
@@ -200,7 +284,6 @@
      */
     _onObjectRemoved: function(object) {
       delete object.group;
-      object.set('active', false);
     },
 
     /**
@@ -262,6 +345,16 @@
         return;
       }
 
+      // the array is now sorted in order of highest first, so start from end
+      for (var i = 0, len = this._objects.length; i < len; i++) {
+        this._renderObject(this._objects[i], ctx);
+      }
+    },
+
+    /**
+     * @private
+     */
+    _transformCtx: function(ctx) {
       ctx.save();
       if (this.transformMatrix) {
         ctx.transform.apply(ctx, this.transformMatrix);
@@ -269,13 +362,13 @@
       this.transform(ctx);
       this._setShadow(ctx);
       this.clipTo && fabric.util.clipContext(this, ctx);
-      // the array is now sorted in order of highest first, so start from end
-      for (var i = 0, len = this._objects.length; i < len; i++) {
-        this._renderObject(this._objects[i], ctx);
-      }
+    },
 
+    /**
+     * @private
+     */
+    _untransformCtx: function(ctx) {
       this.clipTo && ctx.restore();
-
       ctx.restore();
     },
 
@@ -347,12 +440,11 @@
      * @return {fabric.Group} thisArg
      */
     _restoreObjectState: function(object) {
-      this.realizeTransform(object);
-      object.setCoords();
-      object.hasControls = object.__origHasControls;
-      delete object.__origHasControls;
-      object.set('active', false);
-      delete object.group;
+      if (object.group === this) {
+        this.realizeTransform(object);
+        object.setCoords();
+        delete object.group;
+      }
 
       return this;
     },
@@ -403,6 +495,13 @@
      * @private
      */
     _calcBounds: function(onlyWidthHeight) {
+      this.set(this._getBounds(onlyWidthHeight));
+    },
+
+    /**
+     * @private
+     */
+    _getObjectsBounds: function() {
       var aX = [],
           aY = [],
           o, prop,
@@ -420,14 +519,17 @@
         }
       }
 
-      this.set(this._getBounds(aX, aY, onlyWidthHeight));
+      return [aX, aY];
     },
 
     /**
      * @private
      */
-    _getBounds: function(aX, aY, onlyWidthHeight) {
+    _getBounds: function(onlyWidthHeight) {
       var ivt = fabric.util.invertTransform(this.getViewportTransform()),
+          aXY = this._getObjectsBounds(),
+          aX = aXY[0],
+          aY = aXY[1],
           minXY = fabric.util.transformPoint(new fabric.Point(min(aX), min(aY)), ivt),
           maxXY = fabric.util.transformPoint(new fabric.Point(max(aX), max(aY)), ivt),
           obj = {
@@ -494,7 +596,10 @@
         }
         else {
           for (var i = 0, len = this._objects.length; i < len; i++) {
-            if (this._objects[i][prop]) {
+            if (this._objects[i] instanceof fabric.Group) {
+              return this._objects[i].get(prop);
+            }
+            else if (this._objects[i][prop]) {
               return true;
             }
           }

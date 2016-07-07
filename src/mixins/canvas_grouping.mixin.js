@@ -24,18 +24,17 @@
      * @param {fabric.Object} target
      */
     _handleGrouping: function (e, target) {
+      var activeGroup = this.getActiveGroup();
 
-      if (target === this.getActiveGroup()) {
-
-        // if it's a group, find target again, this time skipping group
+      if (target === activeGroup) {
+        // if it's a group, find target again, using activeGroup objects
         target = this.findTarget(e, true);
-
         // if even object is not found, bail out
-        if (!target || target.isType('group')) {
+        if (!target) {
           return;
         }
       }
-      if (this.getActiveGroup()) {
+      if (activeGroup) {
         this._updateActiveGroup(target, e);
       }
       else {
@@ -44,6 +43,10 @@
 
       if (this._activeGroup) {
         this._activeGroup.saveCoords();
+
+        for (var i = 0; i < this._activeGroup._objects.length; i++) {
+          this._activeGroup._objects[i].set('active', false);
+        }
       }
     },
 
@@ -67,6 +70,10 @@
         }
       }
       else {
+        if (target.group) {
+          target.group.pluckWithUpdate(target);
+        }
+
         activeGroup.addWithUpdate(target);
       }
       this.fire('selection:created', { target: activeGroup, e: e });
@@ -81,7 +88,7 @@
       if (this._activeObject && target !== this._activeObject) {
 
         var group = this._createGroup(target);
-        group.addWithUpdate();
+        group.update();
 
         this.setActiveGroup(group);
         this._activeObject = null;
@@ -104,6 +111,15 @@
             ? [ this._activeObject, target ]
             : [ target, this._activeObject ];
 
+      for (var i = 0, groupObject; i < groupObjects.length; i++) {
+        groupObject = groupObjects[i];
+
+        if (groupObject.group) {
+          groupObject.group.pluckWithUpdate(groupObject);
+        }
+      }
+
+      this._activeObject.isEditing && this._activeObject.exitEditing();
       return new fabric.Group(groupObjects, {
         canvas: this
       });
@@ -125,9 +141,14 @@
         group = new fabric.Group(group.reverse(), {
           canvas: this
         });
-        group.addWithUpdate();
+        group.update();
         this.setActiveGroup(group, e);
         group.saveCoords();
+
+        for (var i = 0; i < group._objects.length; i++) {
+          group._objects[i].set('active', false);
+        }
+
         this.fire('selection:created', { target: group });
         this.renderAll();
       }

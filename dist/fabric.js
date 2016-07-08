@@ -2750,6 +2750,27 @@ fabric.Collection = {
   },
 
   /**
+   * Executes given function for each object in this group, recursively
+   * @param {Function} callback
+   *                   Callback invoked with current object as first argument,
+   *                   index - as second and an array of all objects - as third.
+   *                   Iteration happens in reverse order (for performance reasons).
+   *                   Callback is invoked in a context of Global Object (e.g. `window`)
+   *                   when no `context` argument is given
+   *
+   * @param {Object} context Context (aka thisObject)
+   * @return {Self} thisArg
+   */
+  forEachObjectDeep: function(callback, context) {
+    this.forEachObject(function(o) {
+      o.forEachObjectDeep && o.forEachObjectDeep(callback, context);
+      callback.apply(context, arguments);
+    });
+
+    return this;
+  },
+
+  /**
    * Returns an array of children objects of this instance
    * Type parameter introduced in 1.3.10
    * @param {String} [type] When specified, only objects of this type are returned
@@ -11841,14 +11862,22 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         objects = [activeObject];
       }
 
-      target = this._searchPossibleTargets(objects, pointer);
+      // First let's try to find a corner
+      target = this._searchPossibleTargets(objects, pointer, true);
 
-      // We need to make sure that the object being targeted is not being targeted using
-      // an adjusted coordinate system outside the bounds of the actual containing parent
-      if (target !== originalTarget && target.group !== originalTarget) {
-        // If we have in fact discovered an errorneous target, we want to either clear
-        // the target or if possible, target the control point by *normalized coords only*
-        target = this._searchPossibleTargets(objects, pointer, true);
+      // We didn't find a corner
+      if (!target) {
+        // so let's search for any target
+        target = this._searchPossibleTargets(objects, pointer);
+
+        // We need to make sure that the object being targeted is not being targeted using
+        // an adjusted coordinate system outside the bounds of the actual containing parent
+        if (target && target !== originalTarget && target.group !== originalTarget) {
+          // We have in fact found an erroneous target
+          // Therefore lets clear it out
+          target = undefined;
+          this.targets = [ ];
+        }
       }
 
       this._fireOverOutEvents(target, e);
@@ -11926,7 +11955,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
             }
           }
 
-          if (subTarget || !(target instanceof fabric.Group)) {
+          if (subTarget || !(target instanceof fabric.Group && target.subTargetCheck)) {
             break;
           }
         }
@@ -12200,7 +12229,23 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
     _discardActiveGroup: function() {
       var g = this.getActiveGroup();
       if (g) {
+        var toRegroup = [];
+
+        g.forEachObject(function(o) {
+          if (o.__group) {
+            toRegroup.push(o);
+          }
+        });
+
         g.destroy();
+
+        for (var i = 0, object, index; i < toRegroup.length; i++) {
+          object = toRegroup[i];
+          index = object.__group._objects.indexOf(object);
+          object.__group.insertWithUpdate(object, index, true);
+          object.group = object.__group;
+          delete object.__group;
+        }
       }
       this.setActiveGroup(null);
     },
@@ -12703,6 +12748,10 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         target.fire('modified');
       }
 
+      target.forEachObjectDeep && target.forEachObjectDeep(function(o) {
+        o.setCoords();
+      }, this);
+
       target.bubbleThroughGroups(function(g) {
         g.update();
         g.setCoords();
@@ -13150,14 +13199,10 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
             pointer = this.getPointer(e, true),
             corner;
 
-        target.bubbleThroughGroups(function(g) {
-          pointer = this._normalizePointer(g, pointer);
-        }, this);
-
         // only show proper corner when group selection is not active
         corner = target._findTargetCorner
                   && (!activeGroup || !activeGroup.contains(target))
-                  && target._findTargetCorner(pointer);
+                  && target._findTargetCorner(pointer, true);
 
         if (!corner) {
           this.setCursor(hoverCursor);
@@ -13255,6 +13300,10 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
       if (this._activeGroup) {
         this._activeGroup.saveCoords();
+
+        for (var i = 0; i < this._activeGroup._objects.length; i++) {
+          this._activeGroup._objects[i].set('active', false);
+        }
       }
     },
 
@@ -13278,6 +13327,10 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         }
       }
       else {
+        if (target.group) {
+          target.group.pluckWithUpdate(target);
+        }
+
         activeGroup.addWithUpdate(target);
       }
       this.fire('selection:created', { target: activeGroup, e: e });
@@ -13314,6 +13367,15 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
           groupObjects = isActiveLower
             ? [ this._activeObject, target ]
             : [ target, this._activeObject ];
+
+      for (var i = 0, groupObject; i < groupObjects.length; i++) {
+        groupObject = groupObjects[i];
+
+        if (groupObject.group) {
+          groupObject.group.pluckWithUpdate(groupObject);
+        }
+      }
+
       this._activeObject.isEditing && this._activeObject.exitEditing();
       return new fabric.Group(groupObjects, {
         canvas: this
@@ -13339,6 +13401,11 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         group.update();
         this.setActiveGroup(group, e);
         group.saveCoords();
+
+        for (var i = 0; i < group._objects.length; i++) {
+          group._objects[i].set('active', false);
+        }
+
         this.fire('selection:created', { target: group });
         this.renderAll();
       }
@@ -15161,6 +15228,17 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
         return;
       }
 
+      var activeGroup = this.canvas.getActiveGroup(),
+          shouldTransformByGroup = !this.__group;
+
+      if (shouldTransformByGroup) {
+        this.trickleThroughGroups(function(g) {
+          if (this._shouldTransformByGroup(g)) {
+            g._transformCtx(ctx);
+          }
+        }, this);
+      }
+
       ctx.save();
 
       //setup fill rule for current object
@@ -15181,6 +15259,23 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
       this.clipTo && ctx.restore();
 
       ctx.restore();
+
+      if (shouldTransformByGroup) {
+        this.trickleThroughGroups(function(g) {
+          if (this._shouldTransformByGroup(g)) {
+            g._untransformCtx(ctx);
+          }
+        }, this);
+      }
+    },
+
+    /**
+     * @private
+     * @param {fabric.Group} group Group to check
+     * @return {Boolean} should transform by group
+     */
+    _shouldTransformByGroup: function(group) {
+      return group !== this.canvas.getActiveGroup();
     },
 
     /**
@@ -15891,7 +15986,7 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
     getCenterPoint: function(ignoreGroup) {
       var leftTop;
 
-      if (ignoreGroup) {
+      if (ignoreGroup && this.originalLeft && this.originalTop) {
         leftTop = new fabric.Point(this.originalLeft, this.originalTop);
       }
       else {
@@ -20459,39 +20554,29 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
      * @chainable
      */
     insertWithUpdate: function(object, index, nonSplicing) {
-      var parentGroups = [];
-
-      this.trickleThroughGroups(function(g, child) {
-        parentGroups.push({group: g, child: child, index: g._objects.indexOf(child)});
-        g.removeWithUpdate(child);
-      }, this);
-
-      this._restoreObjectsState();
-      fabric.util.resetObjectTransform(this);
-      if (object) {
-        if (typeof index == 'undefined') {
-          this._objects.push(object);
-        }
-        else {
-          if (nonSplicing) {
-            this._objects[index] = object;
+      this._nestWrapper(function() {
+        this._restoreObjectsState();
+        fabric.util.resetObjectTransform(this);
+        if (object) {
+          if (typeof index == 'undefined') {
+            this._objects.push(object);
           }
           else {
-            this._objects.splice(index, 0, object);
+            if (nonSplicing) {
+              this._objects[index] = object;
+            }
+            else {
+              this._objects.splice(index, 0, object);
+            }
           }
+          object.group = this;
+          object._set('canvas', this.canvas);
         }
-        object.group = this;
-        object._set('canvas', this.canvas);
-      }
-      // since _restoreObjectsState obliterates group
-      this.forEachObject(this._setObjectGroup, this);
-      this._calcBounds();
-      this._updateObjectsCoords();
-
-      for (var i = 0, parentGroup; i < parentGroups.length; i++) {
-        parentGroup = parentGroups[i];
-        parentGroup.group.insertWithUpdate(parentGroup.child, parentGroup.index);
-      }
+        // since _restoreObjectsState obliterates group
+        this.forEachObject(this._setObjectGroup, this);
+        this._calcBounds();
+        this._updateObjectsCoords();
+      }, this);
 
       return this;
     },
@@ -20520,16 +20605,56 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
      * @chainable
      */
     removeWithUpdate: function(object) {
-      this._restoreObjectsState();
-      fabric.util.resetObjectTransform(this);
-      // since _restoreObjectsState obliterates group
-      this.forEachObject(this._setObjectGroup, this);
+      this._nestWrapper(function() {
+        this._restoreObjectsState();
+        fabric.util.resetObjectTransform(this);
+        // since _restoreObjectsState obliterates group
+        this.forEachObject(this._setObjectGroup, this);
 
-      this.remove(object);
-      this._calcBounds();
-      this._updateObjectsCoords();
+        this.remove(object);
+        this._calcBounds();
+        this._updateObjectsCoords();
+      }, this);
 
       return this;
+    },
+
+    /**
+     * Plucks an object from a group for temporary use as an independent object
+     * @param {Object} object
+     * @return {fabric.Group} thisArg
+     * @chainable
+     */
+    pluckWithUpdate: function(object) {
+      this._nestWrapper(function() {
+        object.__group = this;
+        this._restoreObjectState(object);
+      }, this);
+
+      return this;
+    },
+
+    /**
+     * @private
+     */
+    _nestWrapper: function(callback, context) {
+      var parentGroups = [];
+
+      context.trickleThroughGroups(function(g, child) {
+        parentGroups.push({
+          group: g,
+          child: child,
+          index: g._objects.indexOf(child)
+        });
+        g.removeWithUpdate(child);
+      }, context);
+
+      callback.call(context);
+
+      for (var i = 0, parentGroup; i < parentGroups.length; i++) {
+        parentGroup = parentGroups[i];
+        parentGroup.group.insertWithUpdate(parentGroup.child, parentGroup.index);
+      }
     },
 
     /**
@@ -20565,7 +20690,6 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
      */
     _onObjectRemoved: function(object) {
       delete object.group;
-      object.set('active', false);
     },
 
     /**
@@ -20627,6 +20751,16 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
         return;
       }
 
+      // the array is now sorted in order of highest first, so start from end
+      for (var i = 0, len = this._objects.length; i < len; i++) {
+        this._renderObject(this._objects[i], ctx);
+      }
+    },
+
+    /**
+     * @private
+     */
+    _transformCtx: function(ctx) {
       ctx.save();
       if (this.transformMatrix) {
         ctx.transform.apply(ctx, this.transformMatrix);
@@ -20635,11 +20769,12 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
       this._setShadow(ctx);
       this.clipTo && fabric.util.clipContext(this, ctx);
       this._transformDone = true;
-      // the array is now sorted in order of highest first, so start from end
-      for (var i = 0, len = this._objects.length; i < len; i++) {
-        this._renderObject(this._objects[i], ctx);
-      }
+    },
 
+    /**
+     * @private
+     */
+    _untransformCtx: function(ctx) {
       this.clipTo && ctx.restore();
       ctx.restore();
       this._transformDone = false;
@@ -20713,9 +20848,11 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
      * @return {fabric.Group} thisArg
      */
     _restoreObjectState: function(object) {
-      this.realizeTransform(object);
-      object.setCoords();
-      delete object.group;
+      if (object.group === this) {
+        this.realizeTransform(object);
+        object.setCoords();
+        delete object.group;
+      }
 
       return this;
     },
@@ -20867,7 +21004,10 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
         }
         else {
           for (var i = 0, len = this._objects.length; i < len; i++) {
-            if (this._objects[i][prop]) {
+            if (this._objects[i] instanceof fabric.Group) {
+              return this._objects[i].get(prop);
+            }
+            else if (this._objects[i][prop]) {
               return true;
             }
           }

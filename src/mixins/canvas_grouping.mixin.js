@@ -43,6 +43,12 @@
 
       if (this._activeGroup) {
         this._activeGroup.saveCoords();
+
+        for (var i = 0; i < this._activeGroup._objects.length; i++) {
+          this._activeGroup._objects[i].set('active', false);
+        }
+
+        this._activeGroup.setCoords();
       }
     },
 
@@ -57,6 +63,11 @@
         activeGroup.removeWithUpdate(target);
         target.set('active', false);
 
+        if (target.__group) {
+          target.__group.unpluckWithUpdate(target);
+          // this._refreshActiveGroup();
+        }
+
         if (activeGroup.size() === 1) {
           // remove group alltogether if after removal it only contains 1 object
           this.discardActiveGroup(e);
@@ -66,6 +77,10 @@
         }
       }
       else {
+        if (target.group) {
+          target.group.pluckWithUpdate(target);
+        }
+
         activeGroup.addWithUpdate(target);
       }
       this.fire('selection:created', { target: activeGroup, e: e });
@@ -80,7 +95,7 @@
       if (this._activeObject && target !== this._activeObject) {
 
         var group = this._createGroup(target);
-        group.addWithUpdate();
+        group.update();
 
         this.setActiveGroup(group);
         this._activeObject = null;
@@ -102,6 +117,15 @@
           groupObjects = isActiveLower
             ? [ this._activeObject, target ]
             : [ target, this._activeObject ];
+
+      for (var i = 0, groupObject; i < groupObjects.length; i++) {
+        groupObject = groupObjects[i];
+
+        if (groupObject.group) {
+          groupObject.group.pluckWithUpdate(groupObject);
+        }
+      }
+
       this._activeObject.isEditing && this._activeObject.exitEditing();
       return new fabric.Group(groupObjects, {
         canvas: this
@@ -124,9 +148,14 @@
         group = new fabric.Group(group.reverse(), {
           canvas: this
         });
-        group.addWithUpdate();
+        group.update();
         this.setActiveGroup(group, e);
         group.saveCoords();
+
+        for (var i = 0; i < group._objects.length; i++) {
+          group._objects[i].set('active', false);
+        }
+
         this.fire('selection:created', { target: group });
         this.renderAll();
       }

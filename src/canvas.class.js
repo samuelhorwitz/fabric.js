@@ -304,12 +304,13 @@
      * Checks if point is contained within an area of given object
      * @param {Event} e Event object
      * @param {fabric.Object} target Object to test against
-     * @param {Object} [point] x,y object of point coordinates we want to check.
+     * @param {Object} point x,y object of point coordinates we want to check.
+     * @param {Boolean} onlyCorners only check to see if controls are targeted and only check by normalized oCoords
      * @return {Boolean} true if point is contained within an area of given object
      */
-    containsPoint: function (e, target, point) {
+    containsPoint: function (e, target, point, onlyCorners) {
       var pointer = point || this.getPointer(e, true),
-          xy = this._normalizePointer(target, pointer);
+          xy, containsCorners;
 
       if (target.group && target.group === this.getActiveGroup()) {
         xy = this._normalizePointer(target.group, pointer);
@@ -317,9 +318,16 @@
       else {
         xy = { x: pointer.x, y: pointer.y };
       }
+
+      containsCorners = target._findTargetCorner(pointer, onlyCorners);
+
+      if (onlyCorners) {
+        return containsCorners;
+      }
+
       // http://www.geog.ubc.ca/courses/klink/gis.notes/ncgia/u32.html
       // http://idav.ucdavis.edu/~okreylos/TAship/Spring2000/PointInPolygon.html
-      return (target.containsPoint(xy) || target._findTargetCorner(pointer));
+      return (target.containsPoint(xy) || containsCorners);
     },
 
     /**
@@ -484,9 +492,17 @@
       }
 
       var pointer = this.getPointer(e),
-          corner = target._findTargetCorner(this.getPointer(e, true)),
-          action = this._getActionFromCorner(target, corner, e),
-          origin = this._getOriginFromCorner(target, corner);
+          unzoomedPointer = this.getPointer(e, true),
+          corner, action, origin;
+
+      target.bubbleThroughGroups(function(g) {
+        pointer = this._normalizePointer(g, pointer);
+        unzoomedPointer = this._normalizePointer(g, unzoomedPointer);
+      }, this);
+
+      corner = target._findTargetCorner(unzoomedPointer);
+      action = this._getActionFromCorner(target, corner, e);
+      origin = this._getOriginFromCorner(target, corner);
 
       this._currentTransform = {
         target: target,
@@ -968,14 +984,33 @@
         return activeGroup;
       }
 
-      var objects = this._objects;
-      this.targets = [ ];
+      var pointer = this.getPointer(e, true),
+          objects = this._objects,
+          originalTarget = this._searchPossibleTargets(objects, pointer),
+          target;
 
       if (this._isLastRenderedObject(pointer, e)) {
         objects = [this.lastRenderedWithControls];
       }
 
-      var target = this._searchPossibleTargets(objects, pointer);
+      // First let's try to find a corner
+      target = this._searchPossibleTargets(objects, pointer, true);
+
+      // We didn't find a corner
+      if (!target) {
+        // so let's search for any target
+        target = this._searchPossibleTargets(objects, pointer);
+
+        // We need to make sure that the object being targeted is not being targeted using
+        // an adjusted coordinate system outside the bounds of the actual containing parent
+        if (target && target !== originalTarget && target.group !== originalTarget) {
+          // We have in fact found an erroneous target
+          // Therefore lets clear it out
+          target = undefined;
+          this.targets = [ ];
+        }
+      }
+
       this._fireOverOutEvents(target, e);
       return target;
     },
@@ -1005,11 +1040,11 @@
     /**
      * @private
      */
-    _checkTarget: function(pointer, obj) {
+    _checkTarget: function(pointer, obj, onlyCorners) {
       if (obj &&
           obj.visible &&
           obj.evented &&
-          this.containsPoint(null, obj, pointer)){
+          this.containsPoint(null, obj, pointer, onlyCorners)){
         if ((this.perPixelTargetFind || obj.perPixelTargetFind) && !obj.isEditing) {
           var isTransparent = this.isTargetTransparent(obj, pointer.x, pointer.y);
           if (!isTransparent) {
@@ -1025,21 +1060,35 @@
     /**
      * @private
      */
-    _searchPossibleTargets: function(objects, pointer) {
+    _searchPossibleTargets: function() {
+      this.targets = [ ];
+      return this.__searchPossibleTargets.apply(this, arguments);
+    },
+
+    /**
+     * @private
+     */
+    __searchPossibleTargets: function(objects, pointer, onlyCorners) {
 
       // Cache all targets where their bounding box contains point.
       var target, i = objects.length, normalizedPointer, subTarget;
       // Do not check for currently grouped objects, since we check the parent group itself.
       // untill we call this function specifically to search inside the activeGroup
       while (i--) {
-        if (this._checkTarget(pointer, objects[i])) {
+        if (this._checkTarget(pointer, objects[i], onlyCorners)) {
           target = objects[i];
-          if (target.type === 'group' && target.subTargetCheck) {
+          if (target instanceof fabric.Group && target.subTargetCheck) {
             normalizedPointer = this._normalizePointer(target, pointer);
-            subTarget = this._searchPossibleTargets(target._objects, normalizedPointer);
-            subTarget && this.targets.push(subTarget);
+            subTarget = this._searchPossibleTargets(target._objects, normalizedPointer, onlyCorners);
+
+            if (!onlyCorners) {
+              subTarget && this.targets.push(subTarget);
+            }
           }
-          break;
+
+          if (subTarget || !(target instanceof fabric.Group && target.subTargetCheck)) {
+            break;
+          }
         }
       }
       return target;
@@ -1282,7 +1331,22 @@
     _discardActiveGroup: function() {
       var g = this.getActiveGroup();
       if (g) {
+        var toRegroup = [];
+
+        g.forEachObject(function(o) {
+          if (o.__group) {
+            toRegroup.push(o);
+          }
+        });
+
         g.destroy();
+
+        for (var i = 0, object, group; i < toRegroup.length; i++) {
+          object = toRegroup[i];
+          group = object.__group;
+          group.unpluckWithUpdate(object);
+          group.setCoords();
+        }
       }
       this.setActiveGroup(null);
     },
@@ -1367,12 +1431,22 @@
      * @private
      */
     _drawObjectsControls: function(ctx) {
-      for (var i = 0, len = this._objects.length; i < len; ++i) {
-        if (!this._objects[i] || !this._objects[i].active) {
+      this._drawCollectionControls(ctx, this);
+    },
+
+    /**
+     * @private
+     */
+    _drawCollectionControls: function(ctx, collection) {
+      for (var i = 0, len = collection._objects.length; i < len; ++i) {
+        if (collection._objects[i] && collection._objects[i]._objects) {
+          this._drawCollectionControls(ctx, collection._objects[i]);
+        }
+        if (!collection._objects[i] || !collection._objects[i].active) {
           continue;
         }
-        this._objects[i]._renderControls(ctx);
-        this.lastRenderedWithControls = this._objects[i];
+        collection._objects[i]._renderControls(ctx);
+        this.lastRenderedWithControls = collection._objects[i];
       }
     },
 

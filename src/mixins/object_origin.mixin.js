@@ -26,14 +26,46 @@
     translateToGivenOrigin: function(point, fromOriginX, fromOriginY, toOriginX, toOriginY) {
       var x = point.x,
           y = point.y,
-          offsetX = originXOffset[toOriginX] - originXOffset[fromOriginX],
-          offsetY = originYOffset[toOriginY] - originYOffset[fromOriginY],
-          dim;
+          offsetX, offsetY, dim;
+
+      if (typeof fromOriginX === 'string') {
+        fromOriginX = originXOffset[fromOriginX];
+      }
+      else {
+        fromOriginX -= 0.5;
+      }
+
+      if (typeof toOriginX === 'string') {
+        toOriginX = originXOffset[toOriginX];
+      }
+      else {
+        toOriginX -= 0.5;
+      }
+
+      offsetX = toOriginX - fromOriginX;
+
+      if (typeof fromOriginY === 'string') {
+        fromOriginY = originYOffset[fromOriginY];
+      }
+      else {
+        fromOriginY -= 0.5;
+      }
+
+      if (typeof toOriginY === 'string') {
+        toOriginY = originYOffset[toOriginY];
+      }
+      else {
+        toOriginY -= 0.5;
+      }
+
+      offsetY = toOriginY - fromOriginY;
+
       if (offsetX || offsetY) {
         dim = this._getTransformedDimensions();
         x = point.x + offsetX * dim.x;
         y = point.y + offsetY * dim.y;
       }
+
       return new fabric.Point(x, y);
     },
 
@@ -71,8 +103,16 @@
      * Returns the real center coordinates of the object
      * @return {fabric.Point}
      */
-    getCenterPoint: function() {
-      var leftTop = new fabric.Point(this.left, this.top);
+    getCenterPoint: function(ignoreGroup) {
+      var leftTop;
+
+      if (ignoreGroup && this.originalLeft && this.originalTop) {
+        leftTop = new fabric.Point(this.originalLeft, this.originalTop);
+      }
+      else {
+        leftTop = new fabric.Point(this.left, this.top);
+      }
+
       return this.translateToCenterPoint(leftTop, this.originX, this.originY);
     },
 
@@ -107,7 +147,7 @@
       var center = this.getCenterPoint(),
           p, p2;
 
-      if (originX && originY) {
+      if (typeof originX !== 'undefined' && typeof originY !== 'undefined' ) {
         p = this.translateToGivenOrigin(center, 'center', 'center', originX, originY);
       }
       else {
@@ -152,12 +192,24 @@
       var angle = degreesToRadians(this.angle),
           hypotFull = this.getWidth(),
           xFull = Math.cos(angle) * hypotFull,
-          yFull = Math.sin(angle) * hypotFull;
+          yFull = Math.sin(angle) * hypotFull,
+          offsetFrom, offsetTo;
 
       //TODO: this function does not consider mixed situation like top, center.
-      this.left += xFull * (originXOffset[to] - originXOffset[this.originX]);
-      this.top += yFull * (originXOffset[to] - originXOffset[this.originX]);
-
+      if (typeof this.originX === 'string') {
+        offsetFrom = originXOffset[this.originX];
+      }
+      else {
+        offsetFrom = this.originX - 0.5;
+      }
+      if (typeof to === 'string') {
+        offsetTo = originXOffset[to];
+      }
+      else {
+        offsetTo = to - 0.5;
+      }
+      this.left += xFull * (offsetTo - offsetFrom);
+      this.top += yFull * (offsetTo - offsetFrom);
       this.setCoords();
       this.originX = to;
     },

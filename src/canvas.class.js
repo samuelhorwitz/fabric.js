@@ -15,6 +15,7 @@
    * @tutorial {@link http://fabricjs.com/fabric-intro-part-1#canvas}
    * @see {@link fabric.Canvas#initialize} for constructor definition
    *
+   * @fires object:added
    * @fires object:modified
    * @fires object:rotating
    * @fires object:scaling
@@ -100,15 +101,6 @@
      * @default
      */
     altActionKey:           'shiftKey',
-
-    /**
-     * Indicates which key enable last rendered selection independently of stack position
-     * values: altKey, shiftKey, ctrlKey
-     * @since 1.6.3
-     * @type String
-     * @default
-     */
-    lastRenderedKey:        'altKey',
 
     /**
      * Indicates that canvas is interactive. This property should not be changed.
@@ -235,6 +227,13 @@
     isDrawingMode:          false,
 
     /**
+     * Indicates whether objects should remain in current stack position when selected. When false objects are brought to top and rendered as part of the selection group
+     * @type Boolean
+     * @default
+     */
+    preserveObjectStacking: false,
+
+    /**
      * @private
      */
     _initInteractive: function() {
@@ -252,9 +251,74 @@
     },
 
     /**
+     * Divides objects in two groups, one to render immediately
+     * and one to render as activeGroup.
+     * @return {Array} objects to render immediately and pushes the other in the activeGroup.
+     */
+    _chooseObjectsToRender: function() {
+      var activeGroup = this.getActiveGroup(),
+          activeObject = this.getActiveObject(),
+          object, objsToRender = [ ], activeGroupObjects = [ ];
+
+      if ((activeGroup || activeObject) && !this.preserveObjectStacking) {
+        for (var i = 0, length = this._objects.length; i < length; i++) {
+          object = this._objects[i];
+          if ((!activeGroup || !activeGroup.contains(object)) && object !== activeObject) {
+            objsToRender.push(object);
+          }
+          else {
+            activeGroupObjects.push(object);
+          }
+        }
+        if (activeGroup) {
+          activeGroup._set('_objects', activeGroupObjects);
+          objsToRender.push(activeGroup);
+        }
+        activeObject && objsToRender.push(activeObject);
+      }
+      else {
+        objsToRender = this._objects;
+      }
+      return objsToRender;
+    },
+
+    /**
+     * Renders both the top canvas and the secondary container canvas.
+     * @return {fabric.Canvas} instance
+     * @chainable
+     */
+    renderAll: function () {
+      if (this.selection && !this._groupSelector && !this.isDrawingMode) {
+        this.clearContext(this.contextTop);
+      }
+      var canvasToDrawOn = this.contextContainer;
+      this.renderCanvas(canvasToDrawOn, this._chooseObjectsToRender());
+      return this;
+    },
+
+    /**
+     * Method to render only the top canvas.
+     * Also used to render the group selection box.
+     * @return {fabric.Canvas} thisArg
+     * @chainable
+     */
+    renderTop: function () {
+      var ctx = this.contextTop;
+      this.clearContext(ctx);
+
+      // we render the top context - last object
+      if (this.selection && this._groupSelector) {
+        this._drawSelection(ctx);
+      }
+
+      this.fire('after:render');
+
+      return this;
+    },
+
+    /**
      * Resets the current transform to its original values and chooses the type of resizing based on the event
      * @private
-     * @param {Event} e Event object fired on mousemove
      */
     _resetCurrentTransform: function() {
       var t = this._currentTransform;
@@ -304,12 +368,14 @@
      * Checks if point is contained within an area of given object
      * @param {Event} e Event object
      * @param {fabric.Object} target Object to test against
-     * @param {Object} [point] x,y object of point coordinates we want to check.
+     * @param {Object} point x,y object of point coordinates we want to check.
+     * @param {Boolean} onlyCorners only check to see if controls are targeted and only check by normalized oCoords
      * @return {Boolean} true if point is contained within an area of given object
      */
-    containsPoint: function (e, target, point) {
-      var pointer = point || this.getPointer(e, true),
-          xy = this._normalizePointer(target, pointer);
+    containsPoint: function (e, target, point, onlyCorners) {
+      var ignoreZoom = true,
+          pointer = point || this.getPointer(e, ignoreZoom),
+          xy, containsCorners;
 
       if (target.group && target.group === this.getActiveGroup()) {
         xy = this._normalizePointer(target.group, pointer);
@@ -317,27 +383,29 @@
       else {
         xy = { x: pointer.x, y: pointer.y };
       }
+
+      containsCorners = target._findTargetCorner(pointer, onlyCorners);
+
+      if (onlyCorners) {
+        return containsCorners;
+      }
+
       // http://www.geog.ubc.ca/courses/klink/gis.notes/ncgia/u32.html
       // http://idav.ucdavis.edu/~okreylos/TAship/Spring2000/PointInPolygon.html
-      return (target.containsPoint(xy) || target._findTargetCorner(pointer));
+      return (target.containsPoint(xy) || containsCorners);
     },
 
     /**
      * @private
      */
     _normalizePointer: function (object, pointer) {
-      var lt, m;
-
-      m = fabric.util.multiplyTransformMatrices(
-            this.viewportTransform,
-            object.calcTransformMatrix());
-
-      m = fabric.util.invertTransform(m);
-      pointer = fabric.util.transformPoint(pointer, m , false);
-      lt = fabric.util.transformPoint(object.getCenterPoint(), m , false);
-      pointer.x -= lt.x;
-      pointer.y -= lt.y;
-      return { x: pointer.x, y: pointer.y };
+      var m = object.calcTransformMatrix(),
+          invertedM = fabric.util.invertTransform(m),
+          vpt = this.viewportTransform,
+          vptPointer = this.restorePointerVpt(pointer),
+          p = fabric.util.transformPoint(vptPointer, invertedM);
+      return fabric.util.transformPoint(p, vpt);
+      //return { x: p.x * vpt[0], y: p.y * vpt[3] };
     },
 
     /**
@@ -351,15 +419,13 @@
       var hasBorders = target.hasBorders,
           transparentCorners = target.transparentCorners,
           ctx = this.contextCache,
-          shouldTransform = target.group && target.group === this.getActiveGroup();
+          originalColor = target.selectionBackgroundColor;
 
       target.hasBorders = target.transparentCorners = false;
+      target.selectionBackgroundColor = '';
 
       ctx.save();
       ctx.transform.apply(ctx, this.viewportTransform);
-      if (shouldTransform) {
-        ctx.transform.apply(ctx, target.group.calcTransformMatrix());
-      }
       target.render(ctx);
       ctx.restore();
 
@@ -367,6 +433,7 @@
 
       target.hasBorders = hasBorders;
       target.transparentCorners = transparentCorners;
+      target.selectionBackgroundColor = originalColor;
 
       var isTransparent = fabric.util.isTransparent(
         ctx, x, y, this.targetFindTolerance);
@@ -484,9 +551,17 @@
       }
 
       var pointer = this.getPointer(e),
-          corner = target._findTargetCorner(this.getPointer(e, true)),
-          action = this._getActionFromCorner(target, corner, e),
-          origin = this._getOriginFromCorner(target, corner);
+          unzoomedPointer = this.getPointer(e, true),
+          corner, action, origin;
+
+      target.bubbleThroughGroups(function(g) {
+        pointer = this._normalizePointer(g, pointer);
+        unzoomedPointer = this._normalizePointer(g, unzoomedPointer);
+      }, this);
+
+      corner = target._findTargetCorner(unzoomedPointer);
+      action = this._getActionFromCorner(target, corner, e);
+      origin = this._getOriginFromCorner(target, corner);
 
       this._currentTransform = {
         target: target,
@@ -795,7 +870,6 @@
       }
       else if (t.originX === 'center') {
         localMouse.x *= t.mouseXSign * 2;
-
         if (localMouse.x < 0) {
           t.mouseXSign = -t.mouseXSign;
         }
@@ -806,7 +880,6 @@
       }
       else if (t.originY === 'center') {
         localMouse.y *= t.mouseYSign * 2;
-
         if (localMouse.y < 0) {
           t.mouseYSign = -t.mouseYSign;
         }
@@ -876,6 +949,7 @@
     },
 
     /**
+     * @param {fabric.Object} target to reset transform
      * @private
      */
     _resetObjectTransform: function (target) {
@@ -888,10 +962,10 @@
 
     /**
      * @private
+     * @param {CanvasRenderingContext2D} ctx to draw the selection on
      */
-    _drawSelection: function () {
-      var ctx = this.contextTop,
-          groupSelector = this._groupSelector,
+    _drawSelection: function (ctx) {
+      var groupSelector = this._groupSelector,
           left = groupSelector.left,
           top = groupSelector.top,
           aleft = abs(left),
@@ -936,19 +1010,6 @@
     },
 
     /**
-     * @private
-     */
-    _isLastRenderedObject: function(pointer, e) {
-      var lastRendered = this.lastRenderedWithControls;
-      return (
-        (this.preserveObjectStacking || e[this.lastRenderedKey]) &&
-        lastRendered &&
-        lastRendered.visible &&
-        (this.containsPoint(null, lastRendered, pointer) ||
-        lastRendered._findTargetCorner(pointer)));
-    },
-
-    /**
      * Method that determines what object we are clicking on
      * @param {Event} e mouse event
      * @param {Boolean} skipGroup when true, activeGroup is skipped and only objects are traversed through
@@ -958,8 +1019,10 @@
         return;
       }
 
-      var pointer = this.getPointer(e, true),
-      activeGroup = this.getActiveGroup();
+      var ignoreZoom = true,
+          pointer = this.getPointer(e, ignoreZoom),
+          activeGroup = this.getActiveGroup(),
+          activeObject = this.getActiveObject();
 
       // first check current group (if one exists)
       // active group does not check sub targets like normal groups.
@@ -968,14 +1031,32 @@
         return activeGroup;
       }
 
-      var objects = this._objects;
-      this.targets = [ ];
+      var objects = this._objects,
+          originalTarget = this._searchPossibleTargets(objects, pointer),
+          target;
 
-      if (this._isLastRenderedObject(pointer, e)) {
-        objects = [this.lastRenderedWithControls];
+      if (activeObject && this._checkTarget(pointer, activeObject)) {
+        objects = [activeObject];
       }
 
-      var target = this._searchPossibleTargets(objects, pointer);
+      // First let's try to find a corner
+      target = this._searchPossibleTargets(objects, pointer, true);
+
+      // We didn't find a corner
+      if (!target) {
+        // so let's search for any target
+        target = this._searchPossibleTargets(objects, pointer);
+
+        // We need to make sure that the object being targeted is not being targeted using
+        // an adjusted coordinate system outside the bounds of the actual containing parent
+        if (target && target !== originalTarget && target.group !== originalTarget) {
+          // We have in fact found an erroneous target
+          // Therefore lets clear it out
+          target = undefined;
+          this.targets = [ ];
+        }
+      }
+
       this._fireOverOutEvents(target, e);
       return target;
     },
@@ -1005,11 +1086,11 @@
     /**
      * @private
      */
-    _checkTarget: function(pointer, obj) {
+    _checkTarget: function(pointer, obj, onlyCorners) {
       if (obj &&
           obj.visible &&
           obj.evented &&
-          this.containsPoint(null, obj, pointer)){
+          this.containsPoint(null, obj, pointer, onlyCorners)){
         if ((this.perPixelTargetFind || obj.perPixelTargetFind) && !obj.isEditing) {
           var isTransparent = this.isTargetTransparent(obj, pointer.x, pointer.y);
           if (!isTransparent) {
@@ -1025,29 +1106,56 @@
     /**
      * @private
      */
-    _searchPossibleTargets: function(objects, pointer) {
+    _searchPossibleTargets: function() {
+      this.targets = [ ];
+      return this.__searchPossibleTargets.apply(this, arguments);
+    },
+
+    /**
+     * @private
+     */
+    __searchPossibleTargets: function(objects, pointer, onlyCorners) {
 
       // Cache all targets where their bounding box contains point.
       var target, i = objects.length, normalizedPointer, subTarget;
       // Do not check for currently grouped objects, since we check the parent group itself.
       // untill we call this function specifically to search inside the activeGroup
       while (i--) {
-        if (this._checkTarget(pointer, objects[i])) {
+        if (this._checkTarget(pointer, objects[i], onlyCorners)) {
           target = objects[i];
-          if (target.type === 'group' && target.subTargetCheck) {
+          if (target instanceof fabric.Group && target.subTargetCheck) {
             normalizedPointer = this._normalizePointer(target, pointer);
-            subTarget = this._searchPossibleTargets(target._objects, normalizedPointer);
-            subTarget && this.targets.push(subTarget);
+            subTarget = this._searchPossibleTargets(target._objects, normalizedPointer, onlyCorners);
+
+            if (!onlyCorners) {
+              subTarget && this.targets.push(subTarget);
+            }
           }
-          break;
+
+          if (subTarget || !(target instanceof fabric.Group && target.subTargetCheck)) {
+            break;
+          }
         }
       }
       return target;
     },
 
     /**
+     * Returns pointer coordinates without the effect of the viewport
+     * @param {Object} pointer with "x" and "y" number values
+     * @return {Object} object with "x" and "y" number values
+     */
+    restorePointerVpt: function(pointer) {
+      return fabric.util.transformPoint(
+        pointer,
+        fabric.util.invertTransform(this.viewportTransform)
+      );
+    },
+
+    /**
      * Returns pointer coordinates relative to canvas.
      * @param {Event} e
+     * @param {Boolean} ignoreZoom
      * @return {Object} object with "x" and "y" number values
      */
     getPointer: function (e, ignoreZoom, upperCanvasEl) {
@@ -1074,10 +1182,7 @@
       pointer.x = pointer.x - this._offset.left;
       pointer.y = pointer.y - this._offset.top;
       if (!ignoreZoom) {
-        pointer = fabric.util.transformPoint(
-          pointer,
-          fabric.util.invertTransform(this.viewportTransform)
-        );
+        pointer = this.restorePointerVpt(pointer);
       }
 
       if (boundsWidth === 0 || boundsHeight === 0) {
@@ -1222,6 +1327,21 @@
 
     /**
      * @private
+     * @param {fabric.Object} obj Object that was removed
+     */
+    _onObjectRemoved: function(obj) {
+      // removing active object should fire "selection:cleared" events
+      if (this.getActiveObject() === obj) {
+        this.fire('before:selection:cleared', { target: obj });
+        this._discardActiveObject();
+        this.fire('selection:cleared', { target: obj });
+        obj.fire('deselected');
+      }
+      this.callSuper('_onObjectRemoved', obj);
+    },
+
+    /**
+     * @private
      */
     _discardActiveObject: function() {
       if (this._activeObject) {
@@ -1231,14 +1351,17 @@
     },
 
     /**
-     * Discards currently active object
+     * Discards currently active object and fire events
+     * @param {event} e
      * @return {fabric.Canvas} thisArg
      * @chainable
      */
     discardActiveObject: function (e) {
+      var activeObject = this._activeObject;
+      this.fire('before:selection:cleared', { target: activeObject, e: e });
       this._discardActiveObject();
-      this.renderAll();
       this.fire('selection:cleared', { e: e });
+      activeObject && activeObject.fire('deselected', { e: e });
       return this;
     },
 
@@ -1256,6 +1379,7 @@
     /**
      * Sets active group to a specified one
      * @param {fabric.Group} group Group to set as a current one
+     * @param {Event} e Event object
      * @return {fabric.Canvas} thisArg
      * @chainable
      */
@@ -1282,16 +1406,34 @@
     _discardActiveGroup: function() {
       var g = this.getActiveGroup();
       if (g) {
+        var toRegroup = [];
+
+        g.forEachObject(function(o) {
+          if (o.__group) {
+            toRegroup.push(o);
+          }
+        });
+
         g.destroy();
+
+        for (var i = 0, object, group; i < toRegroup.length; i++) {
+          object = toRegroup[i];
+          group = object.__group;
+          group.unpluckWithUpdate(object);
+          group.setCoords();
+        }
       }
       this.setActiveGroup(null);
     },
 
     /**
-     * Discards currently active group
+     * Discards currently active group and fire events
      * @return {fabric.Canvas} thisArg
+     * @chainable
      */
     discardActiveGroup: function (e) {
+      var g = this.getActiveGroup();
+      this.fire('before:selection:cleared', { e: e, target: g });
       this._discardActiveGroup();
       this.fire('selection:cleared', { e: e });
       return this;
@@ -1300,6 +1442,7 @@
     /**
      * Deactivates all objects on canvas, removing any active group or object
      * @return {fabric.Canvas} thisArg
+     * @chainable
      */
     deactivateAll: function () {
       var allObjects = this.getObjects(),
@@ -1316,15 +1459,18 @@
     /**
      * Deactivates all objects and dispatches appropriate events
      * @return {fabric.Canvas} thisArg
+     * @chainable
      */
     deactivateAllWithDispatch: function (e) {
-      var activeObject = this.getActiveGroup() || this.getActiveObject();
-      if (activeObject) {
-        this.fire('before:selection:cleared', { target: activeObject, e: e });
+      var activeGroup = this.getActiveGroup(),
+          activeObject = this.getActiveObject();
+      if (activeObject || activeGroup) {
+        this.fire('before:selection:cleared', { target: activeObject || activeGroup, e: e });
       }
       this.deactivateAll();
-      if (activeObject) {
-        this.fire('selection:cleared', { e: e });
+      if (activeObject || activeGroup) {
+        this.fire('selection:cleared', { e: e, target: activeObject });
+        activeObject && activeObject.fire('deselected');
       }
       return this;
     },
@@ -1349,6 +1495,18 @@
     },
 
     /**
+     * Clears all contexts (background, main, top) of an instance
+     * @return {fabric.Canvas} thisArg
+     * @chainable
+     */
+    clear: function () {
+      this.discardActiveGroup();
+      this.discardActiveObject();
+      this.clearContext(this.contextTop);
+      return this.callSuper('clear');
+    },
+
+    /**
      * Draws objects' controls (borders/controls)
      * @param {CanvasRenderingContext2D} ctx Context to render controls on
      */
@@ -1367,35 +1525,24 @@
      * @private
      */
     _drawObjectsControls: function(ctx) {
-      for (var i = 0, len = this._objects.length; i < len; ++i) {
-        if (!this._objects[i] || !this._objects[i].active) {
-          continue;
-        }
-        this._objects[i]._renderControls(ctx);
-        this.lastRenderedWithControls = this._objects[i];
-      }
+      this._drawCollectionControls(ctx, this);
     },
 
     /**
      * @private
-     * @param {fabric.Object} obj Object that was removed
      */
-    _onObjectRemoved: function(obj) {
-      if (obj === this.lastRenderedWithControls) {
-        delete this.lastRenderedWithControls;
+    _drawCollectionControls: function(ctx, collection) {
+      for (var i = 0, len = collection._objects.length; i < len; ++i) {
+        if (collection._objects[i] && collection._objects[i]._objects) {
+          this._drawCollectionControls(ctx, collection._objects[i]);
+        }
+        if (!collection._objects[i] || !collection._objects[i].active) {
+          continue;
+        }
+        collection._objects[i]._renderControls(ctx);
       }
-      this.callSuper('_onObjectRemoved', obj);
     },
 
-    /**
-     * Clears all contexts (background, main, top) of an instance
-     * @return {fabric.Canvas} thisArg
-     * @chainable
-     */
-    clear: function () {
-      delete this.lastRenderedWithControls;
-      return this.callSuper('clear');
-    }
   });
 
   // copying static properties manually to work around Opera's bug,

@@ -23,6 +23,7 @@
    * @fires removed
    *
    * @fires selected
+   * @fires deselected
    * @fires modified
    * @fires rotating
    * @fires scaling
@@ -837,7 +838,7 @@
      * @param {Boolean} fromLeft When true, context is transformed to object's top/left corner. This is used when rendering text on Node
      */
     transform: function(ctx, fromLeft) {
-      if (this.group && this.canvas.preserveObjectStacking && this.group === this.canvas._activeGroup) {
+      if (this.group && !this.group._transformDone && this.group === this.canvas._activeGroup) {
         this.group.transform(ctx);
       }
       var center = fromLeft ? this._getLeftTopCoords() : this.getCenterPoint();
@@ -935,6 +936,55 @@
     },
 
     /**
+     * Executes given function for each parent group all the way up
+     * @param {Function} callback
+     *                   Callback invoked with current group object as first argument,
+     *                   and previous group as second argument
+     *                   Callback is invoked in a context of Global Object (e.g. `window`)
+     *                   when no `context` argument is given
+     *
+     * @param {Object} context Context (aka thisObject)
+     * @return {Self} thisArg
+     */
+    bubbleThroughGroups: function(callback, context) {
+      var child = this,
+          isPartOfActiveGroup = !!this.__group,
+          parentGroup = this.__group || this.group;
+      while (parentGroup) {
+        callback.call(context, parentGroup, child, isPartOfActiveGroup);
+        child = parentGroup;
+        isPartOfActiveGroup = !!parentGroup.__group;
+        parentGroup = parentGroup.__group || parentGroup.group;
+      }
+      return this;
+    },
+
+    /**
+     * Executes given function for each parent group starting at the top and running down
+     * @param {Function} callback
+     *                   Callback invoked with current group object as first argument,
+     *                   and previous group as second argument
+     *                   Callback is invoked in a context of Global Object (e.g. `window`)
+     *                   when no `context` argument is given
+     *
+     * @param {Object} context Context (aka thisObject)
+     * @return {Self} thisArg
+     */
+    trickleThroughGroups: function(callback, context) {
+      var memo = [];
+
+      this.bubbleThroughGroups(function() {
+        memo.push(arguments);
+      });
+
+      for (var i = memo.length - 1; i >= 0; i--) {
+        callback.apply(context, memo[i]);
+      }
+
+      return this;
+    },
+
+    /**
      * Returns a string representation of an instance
      * @return {String}
      */
@@ -945,10 +995,24 @@
     /**
      * Basic getter
      * @param {String} property Property name
-     * @return {Any} value of a property
+     * @return {*} value of a property
      */
     get: function(property) {
       return this[property];
+    },
+
+    /**
+     * Return the object scale factor counting also the group scaling
+     * @return {Object} object with scaleX and scaleY properties
+     */
+    getObjectScaling: function() {
+      var scaleX = this.scaleX, scaleY = this.scaleY;
+      if (this.group) {
+        var scaling = this.group.getObjectScaling();
+        scaleX *= scaling.scaleX;
+        scaleY *= scaling.scaleY;
+      }
+      return { scaleX: scaleX, scaleY: scaleY };
     },
 
     /**
@@ -985,7 +1049,7 @@
     /**
      * @private
      * @param {String} key
-     * @param {Any} value
+     * @param {*} value
      * @return {fabric.Object} thisArg
      */
     _set: function(key, value) {
@@ -1074,6 +1138,17 @@
         return;
       }
 
+      var activeGroup = this.canvas.getActiveGroup(),
+          shouldTransformByGroup = !this.__group;
+
+      if (shouldTransformByGroup) {
+        this.trickleThroughGroups(function(g) {
+          if (this._shouldTransformByGroup(g)) {
+            g._transformCtx(ctx);
+          }
+        }, this);
+      }
+
       ctx.save();
 
       //setup fill rule for current object
@@ -1094,6 +1169,23 @@
       this.clipTo && ctx.restore();
 
       ctx.restore();
+
+      if (shouldTransformByGroup) {
+        this.trickleThroughGroups(function(g) {
+          if (this._shouldTransformByGroup(g)) {
+            g._untransformCtx(ctx);
+          }
+        }, this);
+      }
+    },
+
+    /**
+     * @private
+     * @param {fabric.Group} group Group to check
+     * @return {Boolean} should transform by group
+     */
+    _shouldTransformByGroup: function(group) {
+      return group !== this.canvas.getActiveGroup();
     },
 
     /**
@@ -1156,8 +1248,7 @@
      * @param {Boolean} [noTransform] When true, context is not transformed
      */
     _renderControls: function(ctx, noTransform) {
-      if (!this.active || noTransform
-          || (this.group && this.group !== this.canvas.getActiveGroup())) {
+      if (!this.active || noTransform) {
         return;
       }
 
@@ -1169,12 +1260,18 @@
 
       ctx.save();
       ctx.translate(options.translateX, options.translateY);
-      ctx.lineWidth = 1 / this.borderScaleFactor;
+      ctx.lineWidth = 1 * this.borderScaleFactor;
       ctx.globalAlpha = this.isMoving ? this.borderOpacityWhenMoving : 1;
 
-      if (this.group && this.group === this.canvas.getActiveGroup()) {
+      if (this.group) {
         ctx.rotate(degreesToRadians(options.angle));
-        this.drawBordersInGroup(ctx, options);
+
+        if (this.active) {
+          this.drawBorders(ctx, options);
+        }
+        else {
+          this.drawBordersInGroup(ctx, options);
+        }
       }
       else {
         ctx.rotate(degreesToRadians(this.angle));
@@ -1194,15 +1291,16 @@
       }
 
       var multX = (this.canvas && this.canvas.viewportTransform[0]) || 1,
-          multY = (this.canvas && this.canvas.viewportTransform[3]) || 1;
+          multY = (this.canvas && this.canvas.viewportTransform[3]) || 1,
+          scaling = this.getObjectScaling();
       if (this.canvas && this.canvas._isRetinaScaling()) {
         multX *= fabric.devicePixelRatio;
         multY *= fabric.devicePixelRatio;
       }
       ctx.shadowColor = this.shadow.color;
-      ctx.shadowBlur = this.shadow.blur * (multX + multY) * (this.scaleX + this.scaleY) / 4;
-      ctx.shadowOffsetX = this.shadow.offsetX * multX * this.scaleX;
-      ctx.shadowOffsetY = this.shadow.offsetY * multY * this.scaleY;
+      ctx.shadowBlur = this.shadow.blur * (multX + multY) * (scaling.scaleX + scaling.scaleY) / 4;
+      ctx.shadowOffsetX = this.shadow.offsetX * multX * scaling.scaleX;
+      ctx.shadowOffsetY = this.shadow.offsetY * multY * scaling.scaleY;
     },
 
     /**
@@ -1291,10 +1389,12 @@
     /**
      * Creates an instance of fabric.Image out of an object
      * @param {Function} callback callback, invoked with an instance as a first argument
+     * @param {Object} [options] for clone as image, passed to toDataURL
+     * @param {Boolean} [options.enableRetinaScaling] enable retina scaling for the cloned image
      * @return {fabric.Object} thisArg
      */
-    cloneAsImage: function(callback) {
-      var dataUrl = this.toDataURL();
+    cloneAsImage: function(callback, options) {
+      var dataUrl = this.toDataURL(options);
       fabric.util.loadImage(dataUrl, function(img) {
         if (callback) {
           callback(new fabric.Image(img));
@@ -1313,6 +1413,7 @@
      * @param {Number} [options.top] Cropping top offset. Introduced in v1.2.14
      * @param {Number} [options.width] Cropping width. Introduced in v1.2.14
      * @param {Number} [options.height] Cropping height. Introduced in v1.2.14
+     * @param {Boolean} [options.enableRetina] Enable retina scaling for clone image. Introduce in 1.6.4
      * @return {String} Returns a data: URL containing a representation of the object in the format specified by options.format
      */
     toDataURL: function(options) {
@@ -1325,7 +1426,7 @@
       el.height = boundingRect.height;
 
       fabric.util.wrapElement(el, 'div');
-      var canvas = new fabric.StaticCanvas(el);
+      var canvas = new fabric.StaticCanvas(el, { enableRetinaScaling: options.enableRetinaScaling });
 
       // to avoid common confusion https://github.com/kangax/fabric.js/issues/806
       if (options.format === 'jpg') {

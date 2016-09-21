@@ -6,7 +6,6 @@
       extend = fabric.util.object.extend,
       clone = fabric.util.object.clone,
       toFixed = fabric.util.toFixed,
-      supportsLineDash = fabric.StaticCanvas.supports('setLineDash'),
       NUM_FRACTION_DIGITS = fabric.Object.NUM_FRACTION_DIGITS;
 
   if (fabric.Text) {
@@ -48,10 +47,11 @@
       fontFamily: true,
       fontStyle: true,
       lineHeight: true,
-      stroke: true,
-      strokeWidth: true,
       text: true,
-      textAlign: true
+      charSpacing: true,
+      textAlign: true,
+      stroke: false,
+      strokeWidth: false,
     },
 
     /**
@@ -320,6 +320,14 @@
     _fontSizeMult:             1.13,
 
     /**
+     * additional space between characters
+     * expressed in thousands of em unit
+     * @type Number
+     * @default
+     */
+    charSpacing:             0,
+
+    /**
      * Constructor
      * @param {String} text Text string
      * @param {Object} [options] Options object
@@ -387,23 +395,8 @@
      * @param {CanvasRenderingContext2D} ctx Context to render on
      */
     _renderText: function(ctx) {
-
-      this._translateForTextAlign(ctx);
       this._renderTextFill(ctx);
       this._renderTextStroke(ctx);
-      this._translateForTextAlign(ctx, true);
-    },
-
-    /**
-     * @private
-     * @param {CanvasRenderingContext2D} ctx Context to render on
-     * @param {Boolean} back Indicates if translate back or forward
-     */
-    _translateForTextAlign: function(ctx, back) {
-      if (this.textAlign !== 'left' && this.textAlign !== 'justify') {
-        var sign = back ? -1 : 1;
-        ctx.translate(this.textAlign === 'center' ? (sign * this.width / 2) : sign * this.width, 0);
-      }
     },
 
     /**
@@ -412,15 +405,11 @@
      */
     _setTextStyles: function(ctx) {
       ctx.textBaseline = 'alphabetic';
-      if (!this.skipTextAlign) {
-        ctx.textAlign = this.textAlign;
-      }
       ctx.font = this._getFontDeclaration();
     },
 
     /**
      * @private
-     * @param {CanvasRenderingContext2D} ctx Context to render on
      * @return {Number} Height of fabric.Text object
      */
     _getTextHeight: function() {
@@ -463,7 +452,7 @@
      */
     _renderChars: function(method, ctx, chars, left, top) {
       // remove Text word from method var
-      var shortM = method.slice(0, -4);
+      var shortM = method.slice(0, -4), char, width;
       if (this[shortM].toLive) {
         var offsetX = -this.width / 2 + this[shortM].offsetX || 0,
             offsetY = -this.height / 2 + this[shortM].offsetY || 0;
@@ -472,7 +461,19 @@
         left -= offsetX;
         top -= offsetY;
       }
-      ctx[method](chars, left, top);
+      if (this.charSpacing !== 0) {
+        var additionalSpace = this._getWidthOfCharSpacing();
+        chars = chars.split('');
+        for (var i = 0, len = chars.length; i < len; i++) {
+          char = chars[i];
+          width = ctx.measureText(char).width + additionalSpace;
+          ctx[method](char, left, top);
+          left += width;
+        }
+      }
+      else {
+        ctx[method](chars, left, top);
+      }
       this[shortM].toLive && ctx.restore();
     },
 
@@ -499,7 +500,7 @@
       // stretch the line
       var words = line.split(/\s+/),
           charOffset = 0,
-          wordsWidth = this._getWidthOfWords(ctx, line, lineIndex, 0),
+          wordsWidth = this._getWidthOfWords(ctx, words.join(''), lineIndex, 0),
           widthDiff = this.width - wordsWidth,
           numSpaces = words.length - 1,
           spaceWidth = numSpaces > 0 ? widthDiff / numSpaces : 0,
@@ -519,10 +520,16 @@
     /**
      * @private
      * @param {CanvasRenderingContext2D} ctx Context to render on
-     * @param {Number} line
+     * @param {String} word
      */
-    _getWidthOfWords: function (ctx, line) {
-      return ctx.measureText(line.replace(/\s+/g, '')).width;
+    _getWidthOfWords: function (ctx, word) {
+      var width = ctx.measureText(word).width, charCount, additionalSpace;
+      if (this.charSpacing !== 0) {
+        charCount = word.split('').length;
+        additionalSpace = charCount * this._getWidthOfCharSpacing();
+        width += additionalSpace;
+      }
+      return width;
     },
 
     /**
@@ -551,28 +558,39 @@
     /**
      * @private
      * @param {CanvasRenderingContext2D} ctx Context to render on
+     * @param {String} method Method name ("fillText" or "strokeText")
+     */
+    _renderTextCommon: function(ctx, method) {
+
+      var lineHeights = 0, left = this._getLeftOffset(), top = this._getTopOffset();
+
+      for (var i = 0, len = this._textLines.length; i < len; i++) {
+        var heightOfLine = this._getHeightOfLine(ctx, i),
+            maxHeight = heightOfLine / this.lineHeight,
+            lineWidth = this._getLineWidth(ctx, i),
+            leftOffset = this._getLineLeftOffset(lineWidth);
+        this._renderTextLine(
+          method,
+          ctx,
+          this._textLines[i],
+          left + leftOffset,
+          top + lineHeights + maxHeight,
+          i
+        );
+        lineHeights += heightOfLine;
+      }
+    },
+
+    /**
+     * @private
+     * @param {CanvasRenderingContext2D} ctx Context to render on
      */
     _renderTextFill: function(ctx) {
       if (!this.fill && this.isEmptyStyles()) {
         return;
       }
 
-      var lineHeights = 0;
-
-      for (var i = 0, len = this._textLines.length; i < len; i++) {
-        var heightOfLine = this._getHeightOfLine(ctx, i),
-            maxHeight = heightOfLine / this.lineHeight;
-
-        this._renderTextLine(
-          'fillText',
-          ctx,
-          this._textLines[i],
-          this._getLeftOffset(),
-          this._getTopOffset() + lineHeights + maxHeight,
-          i
-        );
-        lineHeights += heightOfLine;
-      }
+      this._renderTextCommon(ctx, 'fillText');
     },
 
     /**
@@ -584,37 +602,14 @@
         return;
       }
 
-      var lineHeights = 0;
-
       if (this.shadow && !this.shadow.affectStroke) {
         this._removeShadow(ctx);
       }
 
       ctx.save();
-
-      if (this.strokeDashArray) {
-        // Spec requires the concatenation of two copies the dash list when the number of elements is odd
-        if (1 & this.strokeDashArray.length) {
-          this.strokeDashArray.push.apply(this.strokeDashArray, this.strokeDashArray);
-        }
-        supportsLineDash && ctx.setLineDash(this.strokeDashArray);
-      }
-
+      this._setLineDash(ctx, this.strokedashArray);
       ctx.beginPath();
-      for (var i = 0, len = this._textLines.length; i < len; i++) {
-        var heightOfLine = this._getHeightOfLine(ctx, i),
-            maxHeight = heightOfLine / this.lineHeight;
-
-        this._renderTextLine(
-          'strokeText',
-          ctx,
-          this._textLines[i],
-          this._getLeftOffset(),
-          this._getTopOffset() + lineHeights + maxHeight,
-          i
-        );
-        lineHeights += heightOfLine;
-      }
+      this._renderTextCommon(ctx, 'strokeText');
       ctx.closePath();
       ctx.restore();
     },
@@ -638,7 +633,6 @@
     /**
      * @private
      * @param {CanvasRenderingContext2D} ctx Context to render on
-     * @param {Array} textLines Array of all text lines
      */
     _renderTextBackground: function(ctx) {
       this._renderTextBoxBackground(ctx);
@@ -769,6 +763,13 @@
       return width;
     },
 
+    _getWidthOfCharSpacing: function() {
+      if (this.charSpacing !== 0) {
+        return this.fontSize * this.charSpacing / 1000;
+      }
+      return 0;
+    },
+
     /**
      * @private
      * @param {CanvasRenderingContext2D} ctx Context to render on
@@ -776,7 +777,14 @@
      * @return {Number} Line width
      */
     _measureLine: function(ctx, lineIndex) {
-      return ctx.measureText(this._textLines[lineIndex]).width;
+      var line = this._textLines[lineIndex],
+          width = ctx.measureText(line).width,
+          additionalSpace = 0, charCount;
+      if (this.charSpacing !== 0) {
+        charCount = line.split('').length;
+        additionalSpace = (charCount - 1) * this._getWidthOfCharSpacing();
+      }
+      return width + additionalSpace;
     },
 
     /**
@@ -787,7 +795,6 @@
       if (!this.textDecoration) {
         return;
       }
-
       var halfOfVerticalBox = this.height / 2,
           _this = this, offsets = [];
 
@@ -828,7 +835,8 @@
     },
 
     /**
-     * @private
+     * return font declaration string for canvas context
+     * @returns {String} font declaration formatted for canvas context.
      */
     _getFontDeclaration: function() {
       return [
@@ -836,13 +844,14 @@
         (fabric.isLikelyNode ? this.fontWeight : this.fontStyle),
         (fabric.isLikelyNode ? this.fontStyle : this.fontWeight),
         this.fontSize + 'px',
-        (fabric.isLikelyNode ? ('"' + this.fontFamily + '"') : this.fontFamily)
+        '"' + this.fontFamily + '"'
       ].join(' ');
     },
 
     /**
      * Renders text instance on a specified context
      * @param {CanvasRenderingContext2D} ctx Context to render on
+     * @param {Boolean} noTransform
      */
     render: function(ctx, noTransform) {
       // do not render if object is not visible
@@ -893,7 +902,8 @@
         lineHeight:           this.lineHeight,
         textDecoration:       this.textDecoration,
         textAlign:            this.textAlign,
-        textBackgroundColor:  this.textBackgroundColor
+        textBackgroundColor:  this.textBackgroundColor,
+        charSpacing:          this.charSpacing
       });
       if (!this.includeDefaultValues) {
         this._removeDefaultValues(object);
@@ -1012,7 +1022,7 @@
 
       var line = this._textLines[i],
           words = line.split(/\s+/),
-          wordsWidth = this._getWidthOfWords(ctx, line),
+          wordsWidth = this._getWidthOfWords(ctx, words.join('')),
           widthDiff = this.width - wordsWidth,
           numSpaces = words.length - 1,
           spaceWidth = numSpaces > 0 ? widthDiff / numSpaces : 0,
@@ -1076,7 +1086,7 @@
      * we work around it by "moving" alpha channel into opacity attribute and setting fill's alpha to 1
      *
      * @private
-     * @param {Any} value
+     * @param {*} value
      * @return {String}
      */
     _getFillAttributes: function(value) {
@@ -1091,7 +1101,7 @@
     /**
      * Sets specified property to a specified value
      * @param {String} key
-     * @param {Any} value
+     * @param {*} value
      * @return {fabric.Text} thisArg
      * @chainable
      */

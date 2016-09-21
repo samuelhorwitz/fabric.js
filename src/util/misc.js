@@ -17,7 +17,7 @@
      * @static
      * @memberOf fabric.util
      * @param {Array} array
-     * @param {Any} value
+     * @param {*} value
      * @return {Array} original array
      */
     removeFromArray: function(array, value) {
@@ -173,6 +173,7 @@
      * Converts from attribute value to pixel value if applicable.
      * Returns converted pixels or original value not converted.
      * @param {Number|String} value number to operate on
+     * @param {Number} fontSize
      * @return {Number|String}
      */
     parseUnit: function(value, fontSize) {
@@ -255,7 +256,7 @@
      * @memberOf fabric.util
      * @param {String} url URL representing an image
      * @param {Function} callback Callback; invoked with loaded image
-     * @param {Any} [context] Context to invoke callback in
+     * @param {*} [context] Context to invoke callback in
      * @param {Object} [crossOrigin] crossOrigin value to set image element to
      */
     loadImage: function(url, callback, context, crossOrigin) {
@@ -348,6 +349,7 @@
      * @memberOf fabric.util
      * @param {Array} elements SVG elements to group
      * @param {Object} [options] Options object
+     * @param {String} path Value to set sourcePath to
      * @return {fabric.Object|fabric.PathGroup}
      */
     groupSVGElements: function(elements, options, path) {
@@ -638,11 +640,14 @@
     /**
      * Clear char widths cache for a font family.
      * @memberOf fabric.util
-     * @param {String} fontFamily
+     * @param {String} [fontFamily] font family to clear
      */
     clearFabricFontCache: function(fontFamily) {
-      if (fabric.charWidthsCache[fontFamily]) {
-        fabric.charWidthsCache[fontFamily] = { };
+      if (!fontFamily) {
+        fabric.charWidthsCache = { };
+      }
+      else if (fabric.charWidthsCache[fontFamily]) {
+        delete fabric.charWidthsCache[fontFamily];
       }
     }
   };

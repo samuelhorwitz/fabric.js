@@ -3,16 +3,21 @@
  */
 fabric.Collection = {
 
+  _objects: [],
+
   /**
    * Adds objects to collection, then renders canvas (if `renderOnAddRemove` is not `false`)
    * Objects should be instances of (or inherit from) fabric.Object
    * @param {...fabric.Object} object Zero or more fabric instances
    * @return {Self} thisArg
+   * @chainable
    */
   add: function () {
     this._objects.push.apply(this._objects, arguments);
-    for (var i = 0, length = arguments.length; i < length; i++) {
-      this._onObjectAdded(arguments[i]);
+    if (this._onObjectAdded) {
+      for (var i = 0, length = arguments.length; i < length; i++) {
+        this._onObjectAdded(arguments[i]);
+      }
     }
     this.renderOnAddRemove && this.renderAll();
     return this;
@@ -35,7 +40,7 @@ fabric.Collection = {
     else {
       objects.splice(index, 0, object);
     }
-    this._onObjectAdded(object);
+    this._onObjectAdded && this._onObjectAdded(object);
     this.renderOnAddRemove && this.renderAll();
     return this;
   },
@@ -48,24 +53,45 @@ fabric.Collection = {
    */
   remove: function() {
     var objects = this.getObjects(),
-        index;
+        index, somethingRemoved = false;
 
     for (var i = 0, length = arguments.length; i < length; i++) {
       index = objects.indexOf(arguments[i]);
 
       // only call onObjectRemoved if an object was actually removed
       if (index !== -1) {
+        somethingRemoved = true;
         objects.splice(index, 1);
-        this._onObjectRemoved(arguments[i]);
+        this._onObjectRemoved && this._onObjectRemoved(arguments[i]);
       }
     }
 
-    this.renderOnAddRemove && this.renderAll();
+    this.renderOnAddRemove && somethingRemoved && this.renderAll();
     return this;
   },
 
   /**
    * Executes given function for each object in this group
+   * @param {Function} callback
+   *                   Callback invoked with current object as first argument,
+   *                   index - as second and an array of all objects - as third.
+   *                   Callback is invoked in a context of Global Object (e.g. `window`)
+   *                   when no `context` argument is given
+   *
+   * @param {Object} context Context (aka thisObject)
+   * @return {Self} thisArg
+   * @chainable
+   */
+  forEachObject: function(callback, context) {
+    var objects = this.getObjects();
+    for (var i = 0, len = objects.length; i < len; i++) {
+      callback.call(context, objects[i], i, objects);
+    }
+    return this;
+  },
+
+  /**
+   * Executes given function for each object in this group, recursively
    * @param {Function} callback
    *                   Callback invoked with current object as first argument,
    *                   index - as second and an array of all objects - as third.
@@ -76,12 +102,12 @@ fabric.Collection = {
    * @param {Object} context Context (aka thisObject)
    * @return {Self} thisArg
    */
-  forEachObject: function(callback, context) {
-    var objects = this.getObjects(),
-        i = objects.length;
-    while (i--) {
-      callback.call(context, objects[i], i, objects);
-    }
+  forEachObjectDeep: function(callback, context) {
+    this.forEachObject(function(o) {
+      o.forEachObjectDeep && o.forEachObjectDeep(callback, context);
+      callback.apply(context, arguments);
+    });
+
     return this;
   },
 

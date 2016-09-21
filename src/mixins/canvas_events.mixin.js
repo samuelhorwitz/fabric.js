@@ -43,8 +43,8 @@
       // mouse events
       addListener(this.upperCanvasEl, 'mousedown', this._onMouseDown);
       addListener(this.upperCanvasEl, 'mousemove', this._onMouseMove);
-      addListener(this.upperCanvasEl, 'mousewheel', this._onMouseWheel);
       addListener(this.upperCanvasEl, 'mouseout', this._onMouseOut);
+      addListener(this.upperCanvasEl, 'wheel', this._onMouseWheel);
 
       // touch events
       addListener(this.upperCanvasEl, 'touchstart', this._onMouseDown);
@@ -57,6 +57,11 @@
         eventjs.add(this.upperCanvasEl, 'shake', this._onShake);
         eventjs.add(this.upperCanvasEl, 'longpress', this._onLongPress);
       }
+
+      // for double click
+      this.__lastClickTime = +new Date();
+      this.__lastPointer = { };
+      this._drillDownDepth = 0;
     },
 
     /**
@@ -84,8 +89,8 @@
 
       removeListener(this.upperCanvasEl, 'mousedown', this._onMouseDown);
       removeListener(this.upperCanvasEl, 'mousemove', this._onMouseMove);
-      removeListener(this.upperCanvasEl, 'mousewheel', this._onMouseWheel);
       removeListener(this.upperCanvasEl, 'mouseout', this._onMouseOut);
+      removeListener(this.upperCanvasEl, 'wheel', this._onMouseWheel);
 
       removeListener(this.upperCanvasEl, 'touchstart', this._onMouseDown);
       removeListener(this.upperCanvasEl, 'touchmove', this._onMouseMove);
@@ -119,11 +124,10 @@
 
     /**
      * @private
-     * @param {Event} [e] Event object fired on Event.js wheel event
-     * @param {Event} [self] Inner Event object
+     * @param {Event} [e] Event object fired on wheel event
      */
-    _onMouseWheel: function(e, self) {
-      this.__onMouseWheel && this.__onMouseWheel(e, self);
+    _onMouseWheel: function(e) {
+      this.__onMouseWheel(e);
     },
 
     /**
@@ -296,6 +300,7 @@
       }
 
       this._handleCursorAndEvent(e, target, 'up');
+      target && (target.__corner = 0);
       shouldRender && this.renderAll();
     },
 
@@ -347,6 +352,17 @@
         this.fire('object:modified', { target: target });
         target.fire('modified');
       }
+
+      target.forEachObjectDeep && target.forEachObjectDeep(function(o) {
+        o.setCoords();
+      }, this);
+
+      target.bubbleThroughGroups(function(g) {
+        g.update();
+        g.setCoords();
+        this.fire('object:modified', { target: g });
+        g.fire('modified');
+      }, this);
     },
 
     /**
@@ -382,8 +398,7 @@
       if (this.clipTo) {
         fabric.util.clipContext(this, this.contextTop);
       }
-      var ivt = fabric.util.invertTransform(this.viewportTransform),
-          pointer = fabric.util.transformPoint(this.getPointer(e, true), ivt);
+      var pointer = this.getPointer(e);
       this.freeDrawingBrush.onMouseDown(pointer);
       this._handleEvent(e, 'down');
     },
@@ -394,8 +409,7 @@
      */
     _onMouseMoveInDrawingMode: function(e) {
       if (this._isCurrentlyDrawing) {
-        var ivt = fabric.util.invertTransform(this.viewportTransform),
-            pointer = fabric.util.transformPoint(this.getPointer(e, true), ivt);
+        var pointer = this.getPointer(e);
         this.freeDrawingBrush.onMouseMove(pointer);
       }
       this.setCursor(this.freeDrawingCursor);
@@ -442,13 +456,18 @@
       }
 
       var target = this.findTarget(e),
-          pointer = this.getPointer(e, true);
+          pointer = this.getPointer(e, true),
+          deepTargetHandled = false;
+
+      // for double click checking
+      this.__newClickTime = +new Date();
 
       // save pointer for check in __onMouseUp event
       this._previousPointer = pointer;
 
       var shouldRender = this._shouldRender(target, pointer),
-          shouldGroup = this._shouldGroup(e, target);
+          shouldGroup = this._shouldGroup(e, target),
+          shouldDrillDown = this._isDoubleClick(pointer);
 
       if (this._shouldClearSelection(e, target)) {
         this._clearSelection(e, target, pointer);
@@ -458,20 +477,64 @@
         target = this.getActiveGroup();
       }
 
-      if (target) {
-        if (target.selectable && (target.__corner || !shouldGroup)) {
-          this._beforeTransform(e, target);
-          this._setupCurrentTransform(e, target);
+      if (shouldDrillDown || this._drillDownDepth) {
+        for (var i = 0, newDrillDownDepth; i < this.targets.length; i++) {
+          newDrillDownDepth = this.targets.length - i;
+
+          if (!shouldDrillDown && newDrillDownDepth > this._drillDownDepth) {
+            continue;
+          }
+          else if (this._handleTargetMouseDown(e, this.targets[i])) {
+            deepTargetHandled = true;
+            this._drillDownDepth = newDrillDownDepth;
+            break;
+          }
         }
+      }
+
+      if (!deepTargetHandled) {
+        if (target) {
+          this._handleTargetMouseDown(e, target);
+        }
+
+        this._drillDownDepth = 0;
+      }
+
+      this._handleEvent(e, 'down', target ? target : null);
+      this.__lastClickTime = this.__newClickTime;
+      this.__lastPointer = pointer;
+      // we must renderAll so that active image is placed on the top canvas
+      shouldRender && this.renderAll();
+    },
+
+    /**
+     * @private
+     */
+    _isDoubleClick: function(newPointer) {
+      return this.__newClickTime - this.__lastClickTime < 500 &&
+          this.__lastPointer.x === newPointer.x &&
+          this.__lastPointer.y === newPointer.y;
+    },
+
+    /**
+     * @private
+     */
+    _handleTargetMouseDown: function(e, target) {
+      if (target.selectable && (target.__corner || !this._shouldGroup(e, target))) {
+        if (target.group) {
+          target.group.update();
+        }
+        this._beforeTransform(e, target);
+        this._setupCurrentTransform(e, target);
 
         if (target !== this.getActiveGroup() && target !== this.getActiveObject()) {
           this.deactivateAll();
           target.selectable && this.setActiveObject(target, e);
         }
+        return true;
       }
-      this._handleEvent(e, 'down', target ? target : null);
-      // we must renderAll so that active image is placed on the top canvas
-      shouldRender && this.renderAll();
+
+      return false;
     },
 
     /**
@@ -580,7 +643,18 @@
       }
       else if (!this._currentTransform) {
         target = this.findTarget(e);
-        this._setCursorFromEvent(e, target);
+
+        if (this.targets && this.targets.length) {
+          for (var i = this.targets.length - 1; i >= 0; i--) {
+            this._setCursorFromEvent(e, this.targets[i]);
+          }
+        }
+        else if (target) {
+          this._setCursorFromEvent(e, target);
+        }
+        else {
+          this._setCursorFromEvent(e, null);
+        }
       }
       else {
         this._transformObject(e);
@@ -589,20 +663,35 @@
     },
 
     /**
+     * Method that defines actions when an Event Mouse Wheel
+     * @param {Event} e Event object fired on mouseup
+     */
+    __onMouseWheel: function(e) {
+      this.fire('mouse:wheel', {
+        e: e
+      });
+    },
+
+    /**
      * @private
      * @param {Event} e Event fired on mousemove
      */
     _transformObject: function(e) {
       var pointer = this.getPointer(e),
-          transform = this._currentTransform;
+          transform = this._currentTransform,
+          target = transform.target;
+
+      target.bubbleThroughGroups(function(g) {
+        pointer = this._normalizePointer(g, pointer);
+      }, this);
 
       transform.reset = false,
-      transform.target.isMoving = true;
+      target.isMoving = true;
 
       this._beforeScaleTransform(e, transform);
       this._performTransformAction(e, transform, pointer);
 
-      this.renderAll();
+      transform.actionPerformed && this.renderAll();
     },
 
     /**
@@ -671,11 +760,13 @@
 
     /**
      * @private
+     * @param {Event} e Event object
+     * @param {Object} transform current tranform
+     * @param {Number} x mouse position x from origin
+     * @param {Number} y mouse poistion y from origin
      * @return {Boolean} true if the scaling occurred
      */
     _onScale: function(e, transform, x, y) {
-      // rotate object only if shift key is not pressed
-      // and if it is not a group we are transforming
       if ((e[this.uniScaleKey] || this.uniScaleTransform) && !transform.target.get('lockUniScaling')) {
         transform.currentAction = 'scale';
         return this._scaleObject(x, y);
@@ -710,10 +801,13 @@
       }
       else {
         var activeGroup = this.getActiveGroup(),
-            // only show proper corner when group selection is not active
-            corner = target._findTargetCorner
-                      && (!activeGroup || !activeGroup.contains(target))
-                      && target._findTargetCorner(this.getPointer(e, true));
+            pointer = this.getPointer(e, true),
+            corner;
+
+        // only show proper corner when group selection is not active
+        corner = target._findTargetCorner
+                  && (!activeGroup || !activeGroup.contains(target))
+                  && target._findTargetCorner(pointer, true);
 
         if (!corner) {
           this.setCursor(hoverCursor);

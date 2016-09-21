@@ -11845,7 +11845,8 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
       var ignoreZoom = true,
           pointer = this.getPointer(e, ignoreZoom),
-          activeGroup = this.getActiveGroup();
+          activeGroup = this.getActiveGroup(),
+          activeObject = this.getActiveObject();
 
       // first check current group (if one exists)
       // active group does not check sub targets like normal groups.
@@ -12239,12 +12240,11 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
         g.destroy();
 
-        for (var i = 0, object, index; i < toRegroup.length; i++) {
+        for (var i = 0, object, group; i < toRegroup.length; i++) {
           object = toRegroup[i];
-          index = object.__group._objects.indexOf(object);
-          object.__group.insertWithUpdate(object, index, true);
-          object.group = object.__group;
-          delete object.__group;
+          group = object.__group;
+          group.unpluckWithUpdate(object);
+          group.setCoords();
         }
       }
       this.setActiveGroup(null);
@@ -13039,7 +13039,7 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
       else if (!this._currentTransform) {
         target = this.findTarget(e);
 
-        if (this.targets.length) {
+        if (this.targets && this.targets.length) {
           for (var i = this.targets.length - 1; i >= 0; i--) {
             this._setCursorFromEvent(e, this.targets[i]);
           }
@@ -13304,6 +13304,8 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
         for (var i = 0; i < this._activeGroup._objects.length; i++) {
           this._activeGroup._objects[i].set('active', false);
         }
+
+        this._activeGroup.setCoords();
       }
     },
 
@@ -13317,6 +13319,11 @@ fabric.PatternBrush = fabric.util.createClass(fabric.PencilBrush, /** @lends fab
 
         activeGroup.removeWithUpdate(target);
         target.set('active', false);
+
+        if (target.__group) {
+          target.__group.unpluckWithUpdate(target);
+          // this._refreshActiveGroup();
+        }
 
         if (activeGroup.size() === 1) {
           // remove group alltogether if after removal it only contains 1 object
@@ -15039,12 +15046,14 @@ fabric.util.object.extend(fabric.StaticCanvas.prototype, /** @lends fabric.Stati
      * @return {Self} thisArg
      */
     bubbleThroughGroups: function(callback, context) {
-      var parentGroup = this.group,
-          child = this;
+      var child = this,
+          isPartOfActiveGroup = !!this.__group,
+          parentGroup = this.__group || this.group;
       while (parentGroup) {
-        callback.call(context, parentGroup, child);
+        callback.call(context, parentGroup, child, isPartOfActiveGroup);
         child = parentGroup;
-        parentGroup = parentGroup.group;
+        isPartOfActiveGroup = !!parentGroup.__group;
+        parentGroup = parentGroup.__group || parentGroup.group;
       }
       return this;
     },
@@ -20505,6 +20514,9 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
      */
     _updateObjectsCoords: function() {
       for (var i = this._objects.length; i--; ){
+        if (this._objects[i].__group === this) {
+          continue;
+        }
         this._updateObjectCoords(this._objects[i]);
       }
     },
@@ -20634,6 +20646,13 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
       return this;
     },
 
+    unpluckWithUpdate: function(object) {
+      var index = this._objects.indexOf(object);
+      delete object.__group;
+      this.insertWithUpdate(object, index, true);
+      return this;
+    },
+
     /**
      * @private
      */
@@ -20671,6 +20690,9 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
      */
     _setupStateOnObjects: function() {
       for (var i = 0; i < this._objects.length; i++) {
+        if (this._objects[i].__group === this) {
+          continue;
+        }
         this._setupStateOnObject(this._objects[i]);
       }
     },
@@ -20814,7 +20836,7 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
      * @chainable
      */
     _restoreObjectsState: function() {
-      this._objects.forEach(this._restoreObjectState, this);
+      this.forEachObject(this._restoreObjectState, this);
       return this;
     },
 
@@ -20839,6 +20861,18 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
       object.flipY = false;
       object.setPositionByOrigin(center, 'center', 'center');
       return object;
+    },
+
+    forEachObject: function(callback, context, dontSkipActiveGrouped) {
+      var objects = this.getObjects(),
+          i = objects.length;
+      while (i--) {
+        if (!dontSkipActiveGrouped && objects[i].__group === this) {
+          continue;
+        }
+        callback.call(context, objects[i], i, objects);
+      }
+      return this;
     },
 
     /**
@@ -20918,6 +20952,9 @@ fabric.util.object.extend(fabric.Object.prototype, /** @lends fabric.Object.prot
           j, jLen = props.length;
 
       for ( ; i < iLen; ++i) {
+        if (this._objects[i].__group === this) {
+          continue;
+        }
         o = this._objects[i];
         o.setCoords();
         for (j = 0; j < jLen; j++) {
